@@ -1,0 +1,25 @@
+[project]
+name = "Domainscriptor"
+version = "0.1.0"
+description = "Ein CLI-Framework, das ausgewählte Active-Directory-Pentest-Werkzeuge unter einer Oberfläche vereint. Automatisiert Prüfungen und normalisiert Ergebnisse in einer zentralen Sammlung, um Aufwand zu senken und Schwachstellen schneller, transparenter zu bewerten."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Fabian Traxler"}]
+dependencies = [
+  "typer>=0.12",           # CLI
+  "prompt_toolkit>=3.0.52", #Shell History
+  "pydantic>=2.7",         # Settings + CDM-Modelle
+  "rich>=13.7",            # schöne Ausgabe
+  "requests>=2.32",        # HTTP-Adapter (alternativ httpx)
+  "tenacity>=9.0",         # Retry
+  "netifaces>=0.11.0",     # Necessary for responder
+  "aioquic>=1.3.0",        # Necessary for responder
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "pytest-cov", "ruff", "mypy", "types-requests"]
+
+[project.scripts]
+domainscriptor = "domainscriptor.main:main"   
+

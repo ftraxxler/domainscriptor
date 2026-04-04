@@ -1,0 +1,269 @@
+import os
+import sys
+import traceback
+from typing import Annotated, Optional
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import NestedCompleter
+import typer
+import click
+import shlex
+from domainscriptor.Engine import Engine
+from . import project_info
+
+engine = None
+
+info = project_info()
+
+argument_handler = typer.Typer(
+    add_completion=False, no_args_is_help=True, help=info["description"]
+)
+
+
+@argument_handler.callback(invoke_without_command=True)
+def main(
+        version: bool = typer.Option(
+            False,
+            "--version",
+            is_eager=True,  # parse before other args
+        ),
+):
+    if version:
+        typer.echo(f"{info['name']} {info['version']}")
+        raise typer.Exit()
+
+
+@argument_handler.command()
+def help(ctx: typer.Context, adapter: Annotated[str, typer.Argument()] = None):
+    """
+    Show global help or command-specific help. If ADAPTERNAME is provided, show help for that adapter’s commands/options.
+    """
+    eng: Engine = ctx.obj
+    if adapter:
+        typer.echo(eng.show_adapter_help(adapter))
+    else:
+        argument_handler(["--help"], standalone_mode=False)
+
+
+@argument_handler.command()
+def version(ctx: typer.Context, adapter: Annotated[str, typer.Argument()] = None):
+    """
+    Print the Domainscriptor version. If ADAPTERNAME is provided, also show the adapter version/info (if available).
+    """
+    eng: Engine = ctx.obj
+    if adapter:
+        typer.echo(eng.show_adapter_version(adapter))
+    else:
+        argument_handler(["--version"], standalone_mode=False)
+
+
+@argument_handler.command()
+def showAdapters(ctx: typer.Context):
+    """
+    List all registered adapters, including their name, type, and current status (enabled/disabled).
+    """
+    eng: Engine = ctx.obj
+    typer.echo(f"{eng.show_adapters()}")
+
+
+@argument_handler.command()
+def showProcesses(ctx: typer.Context):
+    """
+    Show background processes started by Domainscriptor
+    """
+    eng: Engine = ctx.obj
+    typer.echo(f"{eng.show_processes()}")
+
+
+@argument_handler.command()
+def stopProcess(ctx: typer.Context, name: str):
+    """
+    Stop a background process by NAME. Use 'showprocesses' to see valid process names.
+    """
+    eng: Engine = ctx.obj
+    eng.stop_process(name)
+
+
+def ensure_root_or_reexec() -> None:
+    """Sorgt dafür, dass Domainscriptor mit Root-Rechten läuft.
+
+    - Wenn bereits Root → tue nichts
+    """
+    if os.geteuid() == 0:
+        return  # schon root
+
+    # Schutz vor Endlosschleife
+    if os.environ.get("DOMAINSCRIPTOR_ELEVATED") == "1":
+        typer.secho("❌ Konnte nicht auf Root-Rechte eskalieren.", fg=typer.colors.RED)
+        raise typer.Exit()
+
+    env = os.environ.copy()
+    env["DOMAINSCRIPTOR_ELEVATED"] = "1"
+
+    # sys.executable ist dein venv-Python
+    cmd = ["sudo", sys.executable, "-m", "domainscriptor.main", *sys.argv[1:]]
+
+    typer.secho(
+        f"⚡ Starte Domainscriptor neu mit Root-Rechten ...", fg=typer.colors.YELLOW
+    )
+    os.execvpe("sudo", cmd, env)
+
+
+@argument_handler.command()
+def start():
+    """
+    Start the Domainscriptor engine and initialize adapters. This will prepare the DB and load configuration
+    """
+    typer.echo(f"Starting Domainscriptor ...")
+    ensure_root_or_reexec()
+
+    # Print Banner
+    typer.echo(f"{info['banner']}")
+
+    try:
+        engine = Engine(argument_handler)
+        engine.init_database_connection()
+    except RuntimeError as runtimeError:
+        typer.secho(f"Error: {runtimeError.args[0]}", fg=typer.colors.RED)
+        raise typer.Exit()
+
+    adapters = {k: None for k in engine.show_adapters()}
+    adapter_helps = engine.get_help_List()
+    completer = NestedCompleter.from_nested_dict(
+        {
+            "help": adapters,
+            "version": adapters,
+            "runcommand": adapter_helps,
+            "showadapters": None,
+            "showprocesses": None,
+            "stopprocess": None,
+            "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None},
+            "settings": {"add": None, "delete": None},
+            "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None}
+        }
+    )
+    session = PromptSession(
+        "domainscriptor> ",
+        completer=completer,
+    )
+    while True:
+        try:
+            command = session.prompt().strip()
+
+            if command in {"exit", "quit"}:
+                if typer.confirm("Are you sure you want to close the program?", default=False):
+                    engine.exit()
+                    break
+                else:
+                    continue
+            if not command:
+                continue
+
+            args = shlex.split(command)
+            argument_handler(
+                args=args, standalone_mode=False, obj=engine, allow_extra_args=True
+            )
+        except KeyboardInterrupt:
+            if typer.confirm("Are you sure you want to close the program?", default=False):
+                engine.exit()
+                break
+            continue
+
+        except EOFError:
+            if typer.confirm("Are you sure you want to close the program?", default=False):
+                engine.exit()
+                break
+            continue
+        except click.exceptions.UsageError as exc:
+            typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
+        except Exception as excpetion:
+            typer.secho(f"Unknow Error happen", fg=typer.colors.RED)
+            typer.secho(f"{traceback.print_exc()}", fg=typer.colors.RED)
+
+
+@argument_handler.command(context_settings={"allow_extra_args": True})
+def runCommand(command: str, ctx: typer.Context):
+    """
+    Execute a command inside a specific adapter. Use this to run adapter-specific actions without starting a full workflow.
+    """
+    eng: Engine = ctx.obj
+    kwargs = dict(a.split("=", 1) for a in ctx.args if "=" in a)
+    eng.run_task(command, **kwargs)
+
+
+@argument_handler.command(context_settings={"allow_extra_args": True})
+def fetch(ctx: typer.Context,
+          field: str = typer.Argument(None),
+          value: Optional[str] = typer.Argument(None)):
+    """
+    Fetch and store data from adapters into the database (discovery/results). Typically used after 'start' or after running adapter commands.
+    """
+    eng: Engine = ctx.obj
+    if field is None:
+        typer.echo(eng.read_data())
+    elif value:
+        if field == "byIp":
+            typer.echo(eng.read_data_ip(value))
+        elif field == "byProtocol":
+            typer.echo(eng.read_data_protocol(value))
+        elif field == "byToolname":
+            typer.echo(eng.read_data_tool(value))
+        elif field == "search":
+            typer.echo(eng.search_data(value))
+    else:
+        typer.echo("Invalid field or value not specified")
+
+
+@argument_handler.command(context_settings={"allow_extra_args": True})
+def settings(
+        ctx: typer.Context,
+        field: Optional[str] = typer.Argument(
+            None,
+            help="delete"
+        ),
+        setting_id: Optional[str] = typer.Argument(
+            None,
+            help="Value for the field"
+        ),
+):
+    """
+    Fetch, add and remove the current settings which are predefined user logins
+    """
+    eng: Engine = ctx.obj
+    if field is None:
+        typer.echo(eng.get_settings())
+    elif field == "delete":
+        if setting_id:
+            typer.echo("Following entrie will be deleted:")
+            typer.echo(eng.get_settings_by_id(setting_id))
+            if typer.confirm("Are you sure you want to delete this setting?"):
+                eng.delete_setting(setting_id)
+        else:
+            typer.echo("Entry ID is required")
+    elif field == "add":
+        typer.echo(eng.add_settings())
+    else:
+        typer.echo("Invalid field")
+
+
+@argument_handler.command(context_settings={"allow_extra_args": True})
+def shortcuts(ctx: typer.Context, field: str = typer.Argument(
+    ...,
+    help="delete")):
+    """
+    Run shortcuts to simplify complex commands and run multiple commands at once
+    """
+    eng: Engine = ctx.obj
+    if field == "get_dc":
+        typer.echo("Getting dc and save it in dc.txt")
+        typer.echo(eng.get_dcs())
+    elif field == "get_relayable":
+        typer.echo("Getting smb_relayable hosts and save it in smb_relayable.txt")
+        typer.echo(eng.get_relayable())
+    elif field == "smb_check":
+        typer.echo("Checking smb host")
+        typer.echo(eng.check_smb_security())
+    elif field == "ldap_check":
+        typer.echo("Checking ldap security")
+        typer.echo(eng.check_ldap_security())
+    else:
+        typer.echo("Entry ID is required")
