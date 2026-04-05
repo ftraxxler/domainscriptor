@@ -93,7 +93,7 @@ class SMBClientAdapter(Adapter):
         "domain=": None,
         "recursive=": None,
         "extra_args=": None,
-        "run_as_proxychains": None
+        "proxy": None
     }
     ip_hostname = ""
 
@@ -107,7 +107,7 @@ class SMBClientAdapter(Adapter):
             share: Optional[str] = None,
             recursive: Optional[bool] = None,
             extra_args: Optional[List[str]] = None,
-            run_as_proxychains: Optional[bool] = None,
+            proxy: Optional[bool] = None,
             auth: Optional[SettingsDataModel] = None,
             **kwargs
     ) -> List[str]:
@@ -121,15 +121,13 @@ class SMBClientAdapter(Adapter):
         - command: optional -c "<command>" (z.B. "ls" oder "get foo")
         - extra_args: weitere Argumente (als Liste)
         """
-        typer.echo(f"Setting SMBclient {auth}")
-
         if not target:
             raise AdapterError("target erforderlich", tool=self.executable)
 
         if not username and not (auth and auth.username):
             raise AdapterError("username erforderlich", tool=self.executable)
 
-        if run_as_proxychains:
+        if proxy:
             if not domain and not (auth and auth.domain):
                 raise AdapterError("Domain erforderlich für proxychain", tool=self.executable)
 
@@ -148,8 +146,8 @@ class SMBClientAdapter(Adapter):
             domain = auth.domain
         if password is not None:
             user_spec = f"{username}%{password}"
-        elif run_as_proxychains:
-            user_spec = f"{username}%Password"
+        elif proxy:
+            user_spec = f"{username}%Proxy"
         else:
             user_spec = username
 
@@ -167,7 +165,7 @@ class SMBClientAdapter(Adapter):
         if extra_args:
             cmd.append(extra_args)
 
-        if run_as_proxychains:
+        if proxy:
             proxychain = ["proxychains", "-q"]
             cmd = proxychain + cmd
 

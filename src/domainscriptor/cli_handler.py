@@ -233,7 +233,7 @@ def settings(
         typer.echo(eng.get_settings())
     elif field == "delete":
         if setting_id:
-            typer.echo("Following entrie will be deleted:")
+            typer.echo("Following entry will be deleted:")
             typer.echo(eng.get_settings_by_id(setting_id))
             if typer.confirm("Are you sure you want to delete this setting?"):
                 eng.delete_setting(setting_id)
@@ -248,7 +248,11 @@ def settings(
 @argument_handler.command(context_settings={"allow_extra_args": True})
 def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     ...,
-    help="delete")):
+    help="delete"),
+    proxy: Optional[str] = typer.Argument(
+        False,
+        help="Value for the field"
+    )):
     """
     Run shortcuts to simplify complex commands and run multiple commands at once
     """
@@ -261,9 +265,10 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
         typer.echo(eng.get_relayable())
     elif field == "smb_check":
         typer.echo("Checking smb host")
-        typer.echo(eng.check_smb_security())
+        typer.echo(eng.check_smb_security(proxy=proxy))
+
     elif field == "ldap_check":
         typer.echo("Checking ldap security")
-        typer.echo(eng.check_ldap_security())
+        typer.echo(eng.check_ldap_security(proxy=proxy))
     else:
         typer.echo("Entry ID is required")

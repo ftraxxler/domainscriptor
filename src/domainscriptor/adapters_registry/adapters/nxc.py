@@ -69,6 +69,7 @@ class NXCAdapter(Adapter):
         "module=": None,
         "module_args=": None,
         "extra_args=": None,
+        "proxy=": None,
     }
 
     returnCode_version = 1
@@ -90,7 +91,7 @@ class NXCAdapter(Adapter):
             module_args: Optional[str] = None,
             extra_args: Optional[List[str]] = None,
             auth: Optional[SettingsDataModel] = None,
-            run_as_proxychains: Optional[bool] = None,
+            proxy: Optional[bool] = None,
             **kwargs,
     ) -> List[str]:
         if not target and not targets_file:
@@ -99,7 +100,7 @@ class NXCAdapter(Adapter):
                 tool=self.executable,
             )
 
-        if run_as_proxychains:
+        if proxy:
             if not domain and not (auth and auth.domain):
                 raise AdapterError("Domain erforderlich für proxychain", tool=self.executable)
 
@@ -122,8 +123,8 @@ class NXCAdapter(Adapter):
         elif auth and auth.username:
             cmd += ["-u", auth.username]
 
-        if run_as_proxychains:
-            cmd += ["-p", "P@ss"]
+        if proxy:
+            cmd += ["-p", "Proxy"]
         elif password:
             cmd += ["-p", password]
         elif auth and auth.password:
@@ -149,7 +150,7 @@ class NXCAdapter(Adapter):
         if extra_args:
             cmd.extend(shlex.split(extra_args))
 
-        if run_as_proxychains:
+        if proxy:
             proxychain = ["proxychains", "-q"]
             cmd = proxychain + cmd
 

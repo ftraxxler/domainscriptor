@@ -194,7 +194,7 @@ class Engine:
     def run_task(self, adapter_name: str, return_output=False, **kwargs):
         try:
             adapter = self.create_adapter(adapter_name, **kwargs.pop("adapter_config", {}))
-            typer.echo(f"Logging Command: {kwargs}")
+            #typer.echo(f"Logging Command: {kwargs}")
             default_settings = self.get_default_Credentials()
             # typer.echo(f"Default Settings {default_settings}")
             data = adapter.run(self.runner, self.queue, auth=default_settings, **kwargs)
@@ -237,7 +237,8 @@ class Engine:
 
         return "Adapter does not exist"
 
-    def check_smb_security(self, ip=None):
+    def check_smb_security(self, ip=None,proxy=False):
+        relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:
                 ip = typer.prompt("Enter IP to check")
@@ -245,9 +246,15 @@ class Engine:
             for checks in get_smb_security_commands():
                 parameters = checks["parameters"]
                 parameters["target"] = ip
+                if proxy and relay and checks["creds_required"]:
+                    parameters["proxy"] = str(proxy)
+                    domain,username = relay.user.split("/")
+                    parameters["domain"]=domain
+                    parameters["username"]=username
                 result = self.run_task("nxc", **parameters)
 
-    def check_ldap_security(self, ip=None):
+    def check_ldap_security(self, ip=None,proxy=False):
+        relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:
                 ip = typer.prompt("Enter IP to check")
@@ -255,6 +262,11 @@ class Engine:
             for checks in get_ldap_security_commands():
                 parameters = checks["parameters"]
                 parameters["target"] = ip
+                if proxy and relay and checks["creds_required"]:
+                    parameters["proxy"] = str(proxy)
+                    domain, username = relay.user.split("/")
+                    parameters["domain"] = domain
+                    parameters["username"] = username
                 result = self.run_task("nxc", **parameters)
 
     def _choose_database(self, db_files, db_dir):
@@ -309,3 +321,19 @@ class Engine:
 
     def _check_adapter_exists(self, adapter_name):
         return adapter_name in self.adapter_registry.list_names()
+
+
+    def _get_available_relays(self):
+        relays = self.runner.get_relays()
+        if relays:
+            typer.echo(f"Found {len(relays)} relays")
+            typer.echo(f"Relays: {relays}")
+        if not typer.confirm("Do you want to use a relay?"):
+            return None
+        else:
+            index = 1
+            for relay in relays:
+                typer.echo(f"ID: {index} IP: {relay.ip} User: {relay.user} Admin: {relay.admin_status} ")
+                index += 1
+            index = typer.prompt(f"Select relay", type=int)
+            return relays[index-1]

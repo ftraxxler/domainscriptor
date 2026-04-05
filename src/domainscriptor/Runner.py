@@ -3,8 +3,11 @@ import os
 import subprocess
 import threading
 import time
-from typing import Callable, Dict, List, Literal, Optional
+from typing import Any,Callable, Dict, List, Literal, Optional
 import typer
+
+from domainscriptor.adapters_registry.adapters.watcher.NTLMRelayWatcher import NTLMRelayWatcher
+from domainscriptor.adapters_registry.adapters.watcher.ResponderWatcher import ResponderLogWatcher
 
 JobType = Literal["process", "thread"]
 
@@ -16,6 +19,7 @@ class Job:
     process: Optional[subprocess.Popen] = None
     thread: Optional[threading.Thread] = None
     stop_fn: Optional[Callable[[], None]] = None
+    watcher: Optional[Any] = None
 
     def is_process(self) -> bool:
         return self.kind == "process"
@@ -92,7 +96,7 @@ class Runner:
             daemon=True,
         )
         watcher_thread.start()
-        watcher_job = Job(name=str(name + "-watcher"), kind="thread", thread=watcher_thread, stop_fn=watcher.stop)
+        watcher_job = Job(name=str(name + "-watcher"), kind="thread", thread=watcher_thread, stop_fn=watcher.stop,watcher=watcher)
         jobs.append(watcher_job)
 
         self.running_processes[name] = jobs
@@ -161,3 +165,19 @@ class Runner:
     def stop_all(self):
         for name in list(self.running_processes.keys()):
             self.stop_process(name)
+
+
+    def get_relays(self):
+        if self.running_processes["impacket-ntlmrelayx"]:
+            jobs = self.running_processes["impacket-ntlmrelayx"]
+            if not jobs:
+                typer.echo("Keine Jobs für 'impacket-ntlmrelayx' gefunden")
+                return None
+            for job in jobs:
+                if job.name == "impacket-ntlmrelayx-watcher":
+                    ntlmrelay_watcher = job.watcher
+                    return ntlmrelay_watcher.get_latest_entries()
+            typer.echo("Watcher not running")
+        else:
+            typer.echo("Impacket-NTLMRelay not running")
+        return None
