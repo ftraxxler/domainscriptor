@@ -57,19 +57,19 @@ class NXCAdapter(Adapter):
     name = "nxc"
     executable = "nxc"  # ggf. absoluter Pfad oder alias
     help_List = {
-        "protocol=": None,
-        "target=": None,
-        "targets_file=": None,
-        "username=": None,
-        "password=": None,
-        "hashes=": None,
+        "protocol": None,
+        "target": None,
+        "targets_file": None,
+        "username": None,
+        "password": None,
+        "hashes": None,
         "local_auth": None,
-        "port=": None,
-        "command=": None,
-        "module=": None,
-        "module_args=": None,
-        "extra_args=": None,
-        "proxy=": None,
+        "port": None,
+        "command": None,
+        "module": None,
+        "module_args": None,
+        "extra_args": None,
+        "proxy": None,
     }
 
     returnCode_version = 1

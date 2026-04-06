@@ -85,14 +85,14 @@ class SMBClientAdapter(Adapter):
     name = "smbclient"
     executable = "smbclient"
     help_List = {
-        "target=": None,
-        "username=": None,
-        "command=": None,
-        "password=": None,
-        "share=": None,
-        "domain=": None,
-        "recursive=": None,
-        "extra_args=": None,
+        "target": None,
+        "username": None,
+        "command": None,
+        "password": None,
+        "share": None,
+        "domain": None,
+        "recursive": None,
+        "extra_args": None,
         "proxy": None
     }
     ip_hostname = ""

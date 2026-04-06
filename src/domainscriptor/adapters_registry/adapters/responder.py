@@ -8,8 +8,8 @@ class ResponderAdapter(Adapter):
     executable = "responder"
     watcher = ResponderLogWatcher
     help_List = {
-        "interface=": None,
-        "extra_args=": None,
+        "interface": None,
+        "extra_args": None,
     }
     run_background = True
 

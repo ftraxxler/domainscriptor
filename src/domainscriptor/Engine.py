@@ -108,7 +108,7 @@ class Engine:
             settings = None
             if typer.confirm("Do you want to set initial settings?"):
                 settings = self._init_setting()
-            self._set_target()
+            self.set_target()
             db_writer.init_database(settings)
 
         db_writer.start()
@@ -237,8 +237,30 @@ class Engine:
 
         return "Adapter does not exist"
 
+    def get_targets(self):
+        try:
+            with open("targets.txt") as f:
+                typer.echo(f"TARGETS:")
+                for line in f:
+                    typer.echo(line.strip())
+
+        except FileNotFoundError:
+            typer.echo(f"Targets file not found")
+
+    def get_relayable(self):
+        try:
+            with open("smb_relayable.txt") as f:
+                typer.echo(f"SMB Relayable Targets:")
+                for line in f:
+                    typer.echo(line.strip())
+
+        except FileNotFoundError:
+            typer.echo(f"Targets file not found")
+
     def check_smb_security(self, ip=None,proxy=False):
-        relay = self._get_available_relays()
+        relay = None
+        if proxy:
+            relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:
                 ip = typer.prompt("Enter IP to check")
@@ -254,7 +276,9 @@ class Engine:
                 result = self.run_task("nxc", **parameters)
 
     def check_ldap_security(self, ip=None,proxy=False):
-        relay = self._get_available_relays()
+        relay = None
+        if proxy:
+            relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:
                 ip = typer.prompt("Enter IP to check")
@@ -311,7 +335,7 @@ class Engine:
         typer.echo(f"Settings created for {settings}")
         return settings
 
-    def _set_target(self):
+    def set_target(self):
         typer.echo("Set the target IP ranges Format X.X.X.X(/Y) (separate by ,)")
         targets = typer.prompt("Targets")
         targets = targets.split(",")

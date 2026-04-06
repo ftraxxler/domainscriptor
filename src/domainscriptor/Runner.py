@@ -77,18 +77,18 @@ class Runner:
             env=env
         )
 
-        typer.secho(f"🚀 Starte {name} im Hintergrund: {' '.join(cmd)}", fg=typer.colors.CYAN)
+        typer.secho(f"🚀 Starte {name} im Hintergrund: {' '.join(cmd)}", fg=typer.colors.GREEN)
         tool_job = Job(name=str(name + "-Tool"), kind="process", process=process)
         jobs.append(tool_job)
 
-        typer.secho(f"🚀 Starte Stout für {name} im Hintergrund ", fg=typer.colors.CYAN)
+        typer.secho(f"🚀 Starte Stout für {name} im Hintergrund ", fg=typer.colors.GREEN)
         stout_stop_event = threading.Event()
         stout_thread = threading.Thread(target=self.stream_output, args=(process,stout_stop_event,), daemon=True)
         stout_thread.start()
         stout_job = Job(name=str(name + "-stout"), kind="thread", thread=stout_thread,stop_fn=stout_stop_event.set)
         jobs.append(stout_job)
 
-        typer.secho(f"🚀 Starte Watcher für {name} im Hintergrund ", fg=typer.colors.CYAN)
+        typer.secho(f"🚀 Starte Watcher für {name} im Hintergrund ", fg=typer.colors.GREEN)
 
         watcher = watcher_cls(queue=queue)
         watcher_thread = threading.Thread(
@@ -102,7 +102,7 @@ class Runner:
         self.running_processes[name] = jobs
 
     def show_processes(self):
-        return self.running_processes.keys()
+        return list(self.running_processes.keys())
 
     def stop_process(self, name: str, timeout: float = 5.0):
         jobs = self.running_processes[name]
@@ -165,7 +165,6 @@ class Runner:
     def stop_all(self):
         for name in list(self.running_processes.keys()):
             self.stop_process(name)
-
 
     def get_relays(self):
         if self.running_processes["impacket-ntlmrelayx"]:

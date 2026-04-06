@@ -4,11 +4,14 @@ import traceback
 from typing import Annotated, Optional
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.patch_stdout import patch_stdout
 import typer
 import click
 import shlex
+
 from domainscriptor.Engine import Engine
 from . import project_info
+from .cli_completioner import MainCompleter, RuncommandCompleter, StopProcessCompleter
 
 engine = None
 
@@ -128,56 +131,60 @@ def start():
 
     adapters = {k: None for k in engine.show_adapters()}
     adapter_helps = engine.get_help_List()
-    completer = NestedCompleter.from_nested_dict(
-        {
+    commands =      {
             "help": adapters,
             "version": adapters,
-            "runcommand": adapter_helps,
+            "runcommand": None,
             "showadapters": None,
             "showprocesses": None,
             "stopprocess": None,
             "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None},
             "settings": {"add": None, "delete": None},
-            "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None}
+            "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None},
+            "targets": None,
+            "relayable": None,
         }
-    )
+    base_completer = NestedCompleter.from_nested_dict(commands)
+    runcommand_completer = RuncommandCompleter(adapter_helps)
+    stopprocess_completer = StopProcessCompleter(engine.show_processes)#Wichtig hier Funktion übergeben
     session = PromptSession(
         "domainscriptor> ",
-        completer=completer,
+        completer=MainCompleter(base_completer,runcommand_completer,stopprocess_completer),
     )
-    while True:
-        try:
-            command = session.prompt().strip()
+    with patch_stdout(raw=True):
+        while True:
+            try:
+                command = session.prompt().strip()
 
-            if command in {"exit", "quit"}:
+                if command in {"exit", "quit"}:
+                    if typer.confirm("Are you sure you want to close the program?", default=False):
+                        engine.exit()
+                        break
+                    else:
+                        continue
+                if not command:
+                    continue
+
+                args = shlex.split(command)
+                argument_handler(
+                    args=args, standalone_mode=False, obj=engine, allow_extra_args=True
+                )
+            except KeyboardInterrupt:
                 if typer.confirm("Are you sure you want to close the program?", default=False):
                     engine.exit()
                     break
-                else:
-                    continue
-            if not command:
                 continue
 
-            args = shlex.split(command)
-            argument_handler(
-                args=args, standalone_mode=False, obj=engine, allow_extra_args=True
-            )
-        except KeyboardInterrupt:
-            if typer.confirm("Are you sure you want to close the program?", default=False):
-                engine.exit()
-                break
-            continue
-
-        except EOFError:
-            if typer.confirm("Are you sure you want to close the program?", default=False):
-                engine.exit()
-                break
-            continue
-        except click.exceptions.UsageError as exc:
-            typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
-        except Exception as excpetion:
-            typer.secho(f"Unknow Error happen", fg=typer.colors.RED)
-            typer.secho(f"{traceback.print_exc()}", fg=typer.colors.RED)
+            except EOFError:
+                if typer.confirm("Are you sure you want to close the program?", default=False):
+                    engine.exit()
+                    break
+                continue
+            except click.exceptions.UsageError as exc:
+                typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
+            except Exception as excpetion:
+                typer.secho(f"Unknow Error happen", fg=typer.colors.RED)
+                typer.secho(f"{traceback.print_exc()}", fg=typer.colors.RED)
 
 
 @argument_handler.command(context_settings={"allow_extra_args": True})
@@ -249,10 +256,10 @@ def settings(
 def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     ...,
     help="delete"),
-    proxy: Optional[str] = typer.Argument(
-        False,
-        help="Value for the field"
-    )):
+              proxy: Optional[str] = typer.Argument(
+                  False,
+                  help="Value for the field"
+              )):
     """
     Run shortcuts to simplify complex commands and run multiple commands at once
     """
@@ -272,3 +279,27 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
         typer.echo(eng.check_ldap_security(proxy=proxy))
     else:
         typer.echo("Entry ID is required")
+
+
+@argument_handler.command()
+def targets(ctx: typer.Context, parameter: Optional[str] = typer.Argument(
+    None,
+    help="delete"
+), ):
+    """
+    Prints out the set targets
+    """
+    eng: Engine = ctx.obj
+    if parameter is None:
+        eng.get_targets()
+    elif parameter == "set":
+        eng.set_target()
+
+
+@argument_handler.command()
+def relayable(ctx: typer.Context):
+    """
+    Prints out the relayable targets
+    """
+    eng: Engine = ctx.obj
+    eng.get_relayable()

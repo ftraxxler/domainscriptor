@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-
+from pathlib import Path
 from .watcher.NTLMRelayWatcher import NTLMRelayWatcher
 from ..base import Adapter, AdapterError
 
@@ -17,13 +17,13 @@ class NTLMRelayAdapter(Adapter):
     executable = "impacket-ntlmrelayx"
     watcher = NTLMRelayWatcher
     help_List = {
-        "targets_file=": None,
-        "target=": None,
-        "protocol=": None,
-        "command=": None,
-        "loot_dir=": None,
-        "interface=": None,
-        "extra_args=": None,
+        "targets_file": None,
+        "target": None,
+        "protocol": None,
+        "command": None,
+        "loot_dir": None,
+        "interface": None,
+        "extra_args": None,
         "smb2support": None,
         "keeprelaying": None,
         "socks": None,
@@ -34,7 +34,7 @@ class NTLMRelayAdapter(Adapter):
 
     def build_command(
             self,
-            targets_file: Optional[str] = None,  # -tf target file
+            targets_file: Optional[str] = "smb_relayable.txt",  # -tf target file
             target: Optional[
                 str
             ] = None,  # -t single target, z.B. 10.0.0.5 oder smb://10.0.0.5
@@ -48,11 +48,19 @@ class NTLMRelayAdapter(Adapter):
             extra_args: Optional[List[str]] = None,
             **kwargs,
     ) -> List[str]:
+
         if not targets_file and not target:
             raise AdapterError(
                 "Entweder 'targets_file' oder 'target' ist erforderlich.",
                 tool=self.executable,
             )
+
+        if not target:
+            if not Path("smb_relayable.txt").exists():
+                raise AdapterError(
+                    "smb_relayable.txt does not exists run \"shortcuts get_relayable\" first",
+                    tool=self.executable,
+                )
 
         cmd: List[str] = [self.executable]
 

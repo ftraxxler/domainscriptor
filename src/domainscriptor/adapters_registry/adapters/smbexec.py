@@ -6,12 +6,12 @@ class SMBExecAdapter(Adapter):
     name = "smbexec"
     executable = "impacket-smbexec"  # ggf. smbexec.py oder absoluter Pfad
     help_List = {
-        "target=": None,
-        "username=": None,
-        "password=": None,
-        "domain=": None,
-        "command=": None,
-        "extra_args=": None,
+        "target": None,
+        "username": None,
+        "password": None,
+        "domain": None,
+        "command": None,
+        "extra_args": None,
     }
     returnCode_version = 2
 

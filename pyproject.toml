@@ -1,6 +1,6 @@
 [project]
 name = "Domainscriptor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Ein CLI-Framework, das ausgewählte Active-Directory-Pentest-Werkzeuge unter einer Oberfläche vereint. Automatisiert Prüfungen und normalisiert Ergebnisse in einer zentralen Sammlung, um Aufwand zu senken und Schwachstellen schneller, transparenter zu bewerten."
 readme = "README.md"
 requires-python = ">=3.11"
