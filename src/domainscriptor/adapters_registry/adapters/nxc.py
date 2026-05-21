@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 
 import typer
 
-from ..base import Adapter, AdapterError
+from ..abstract_adapter import Adapter, AdapterError
 from dataclasses import dataclass, asdict
 
 from ...data.canonical_db import CanonicalDataModel, SettingsDataModel

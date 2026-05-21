@@ -30,7 +30,7 @@ class AdapterError(RuntimeError):
 class Adapter(ABC):
     """
     Basis-Interface für externe CLI-Tools.
-    Implementiere `build_command` und optional `parse_output` / `prepare`.
+    Implementiere `build_command und normalizer
     """
 
     name: str = "base"
@@ -74,11 +74,6 @@ class Adapter(ABC):
         except (FileNotFoundError, subprocess.SubprocessError):
             raise RuntimeError(f"{cls.executable} can not be executed")
 
-    async def prepare(self) -> None:
-        """
-        Optionale Vorbereitungen (z.B. Temp-Dirs, Prüfen von Ressourcen).
-        """
-        return
 
     @abstractmethod
     def build_command(self, **kwargs) -> List[str]:
@@ -151,7 +146,6 @@ class Adapter(ABC):
                     timeout=timeout,
                     text=True,
                 )
-                # viele CLI-Tools geben 0 oder 1 bei Hilfe/Version zurück
                 # print(f"Logging Result {result}")
                 output = self.parse_output(result.stdout)
                 return output

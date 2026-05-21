@@ -5,16 +5,18 @@ from queue import Queue
 from pathlib import Path
 from typing import List, Tuple
 
+
 import typer
 from domainscriptor.Runner import Runner
 from domainscriptor.automations import *
 from domainscriptor.adapters_registry.adapters.ntlmrelayx import NTLMRelayAdapter
+from domainscriptor.adapters_registry.adapters.nmap import NmapAdapter
 from domainscriptor.adapters_registry.adapters.nxc import NXCAdapter
 from domainscriptor.adapters_registry.adapters.proxychains import ProxychainsAdapter
 from domainscriptor.adapters_registry.adapters.responder import ResponderAdapter
 from domainscriptor.adapters_registry.adapters.smbexec import SMBExecAdapter
 from domainscriptor.adapters_registry.adapters.smbclient import SMBClientAdapter
-from domainscriptor.adapters_registry.base import Adapter
+from src.domainscriptor.adapters_registry.abstract_adapter import Adapter
 from domainscriptor.adapters_registry.registry import Adapter_Registry
 from domainscriptor.data.canonical_db import SettingsDataModel
 from domainscriptor.data.db_reader import DBReader
@@ -94,6 +96,7 @@ class Engine:
         self.adapter_registry.register(NTLMRelayAdapter)
         self.adapter_registry.register(NXCAdapter)
         self.adapter_registry.register(ProxychainsAdapter)
+        self.adapter_registry.register(NmapAdapter)
 
     def init_database_connection(self, db_dir: str = "."):
         self.queue = Queue()

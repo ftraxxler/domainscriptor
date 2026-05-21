@@ -9,7 +9,7 @@ import typer
 import click
 import shlex
 
-from domainscriptor.Engine import Engine
+from src.domainscriptor.engine import Engine
 from . import project_info
 from .cli_completioner import MainCompleter, RuncommandCompleter, StopProcessCompleter
 
@@ -38,7 +38,7 @@ def main(
 @argument_handler.command()
 def help(ctx: typer.Context, adapter: Annotated[str, typer.Argument()] = None):
     """
-    Show global help or command-specific help. If ADAPTERNAME is provided, show help for that adapter’s commands/options.
+    Show global help or command-specific help. If ADAPTERNAME is provided, show help for that adapter`s commands/options.
     """
     eng: Engine = ctx.obj
     if adapter:

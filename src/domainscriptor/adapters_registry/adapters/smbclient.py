@@ -5,7 +5,7 @@ import re
 
 import typer
 
-from ..base import Adapter, AdapterError
+from ..abstract_adapter import Adapter, AdapterError
 from typing import Optional, List
 
 from ...data.canonical_db import CanonicalDataModel, SettingsDataModel

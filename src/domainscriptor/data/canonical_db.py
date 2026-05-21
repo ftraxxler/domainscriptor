@@ -146,3 +146,6 @@ class CanonicalDB:
                           WHERE id = ?
                           """, (setting_id,))
         self.conn.commit()
+
+
+

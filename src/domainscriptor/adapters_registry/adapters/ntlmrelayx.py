@@ -1,7 +1,7 @@
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from .watcher.NTLMRelayWatcher import NTLMRelayWatcher
-from ..base import Adapter, AdapterError
+from ..abstract_adapter import Adapter, AdapterError
 
 
 class NTLMRelayAdapter(Adapter):

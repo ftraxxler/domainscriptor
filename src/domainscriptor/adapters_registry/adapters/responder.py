@@ -1,4 +1,4 @@
-from ..base import Adapter, AdapterError
+from ..abstract_adapter import Adapter, AdapterError
 from typing import Optional, List
 from domainscriptor.adapters_registry.adapters.watcher.ResponderWatcher import ResponderLogWatcher
 

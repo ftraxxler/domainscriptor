@@ -2,7 +2,7 @@ from typing import Optional, List, Dict, Any, Union
 
 import typer
 
-from ..base import Adapter, AdapterError
+from ..abstract_adapter import Adapter, AdapterError
 import shlex
 
 
