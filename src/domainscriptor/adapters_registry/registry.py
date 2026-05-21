@@ -1,6 +1,6 @@
 from typing import Dict, List, Type
 
-from src.domainscriptor.adapters_registry.abstract_adapter import Adapter, AdapterError
+from domainscriptor.adapters_registry.abstract_adapter import Adapter
 
 
 class Adapter_Registry:

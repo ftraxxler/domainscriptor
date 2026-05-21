@@ -16,7 +16,7 @@ from domainscriptor.adapters_registry.adapters.proxychains import ProxychainsAda
 from domainscriptor.adapters_registry.adapters.responder import ResponderAdapter
 from domainscriptor.adapters_registry.adapters.smbexec import SMBExecAdapter
 from domainscriptor.adapters_registry.adapters.smbclient import SMBClientAdapter
-from src.domainscriptor.adapters_registry.abstract_adapter import Adapter
+from domainscriptor.adapters_registry.abstract_adapter import Adapter
 from domainscriptor.adapters_registry.registry import Adapter_Registry
 from domainscriptor.data.canonical_db import SettingsDataModel
 from domainscriptor.data.db_reader import DBReader

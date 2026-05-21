@@ -9,7 +9,7 @@ import typer
 import click
 import shlex
 
-from src.domainscriptor.engine import Engine
+from domainscriptor.engine import Engine
 from . import project_info
 from .cli_completioner import MainCompleter, RuncommandCompleter, StopProcessCompleter
 
