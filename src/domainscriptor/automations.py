@@ -34,7 +34,7 @@ def get_smb_security_commands():
          "parameters": {"username": "", "password": ""}},
 
         # Guest Logon
-        {"toolname": "nxc", "creds_required": False, "vuln": "SMB Guest Logon",
+        {"toolname": "nxc", "creds_required": True, "vuln": "SMB Guest Logon",
          "parameters": {"username": "a", "password": ""}},
     ]
 
