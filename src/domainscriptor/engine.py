@@ -276,7 +276,7 @@ class Engine:
                     domain,username = relay.user.split("/")
                     parameters["domain"]=domain
                     parameters["username"]=username
-                else:
+                elif not checks["creds_required"]:
                     parameters["username"]=''
                     parameters["password"]=''
                 result = self.run_task("nxc", **parameters)

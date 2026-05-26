@@ -155,6 +155,7 @@ class NXCAdapter(Adapter):
             cmd = proxychain + cmd
 
         self.used_protocol = protocol
+        print(cmd)
         return cmd
 
     def normalizer(self, entries):
