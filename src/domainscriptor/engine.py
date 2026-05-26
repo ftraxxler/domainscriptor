@@ -262,7 +262,7 @@ class Engine:
 
     def check_smb_security(self, ip=None,proxy=False):
         relay = None
-        if proxy:
+        if proxy==True:
             relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:
@@ -280,7 +280,7 @@ class Engine:
 
     def check_ldap_security(self, ip=None,proxy=False):
         relay = None
-        if proxy:
+        if proxy==True:
             relay = self._get_available_relays()
         if self._check_adapter_exists("nxc"):
             if not ip:

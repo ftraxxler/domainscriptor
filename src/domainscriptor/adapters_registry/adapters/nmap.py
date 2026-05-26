@@ -111,7 +111,7 @@ class NmapAdapter(Adapter):
         "extra_args": None,
     }
 
-    returnCode_version = 1
+    returnCode_version = 0
     used_protocol = "tcp"
 
     def build_command(
