@@ -276,6 +276,9 @@ class Engine:
                     domain,username = relay.user.split("/")
                     parameters["domain"]=domain
                     parameters["username"]=username
+                else:
+                    parameters["username"]=''
+                    parameters["password"]=''
                 result = self.run_task("nxc", **parameters)
 
     def check_ldap_security(self, ip=None,proxy=False):

@@ -118,14 +118,14 @@ class NXCAdapter(Adapter):
         elif auth and auth.domain:
             cmd += ["-d", auth.domain]
 
-        if username:
+        if username or username=="":
             cmd += ["-u", username]
         elif auth and auth.username:
             cmd += ["-u", auth.username]
 
         if proxy:
             cmd += ["-p", "Proxy"]
-        elif password:
+        elif password or password=="":
             cmd += ["-p", password]
         elif auth and auth.password:
             cmd += ["-p", auth.password]
