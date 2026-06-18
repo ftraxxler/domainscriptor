@@ -34,6 +34,9 @@ class NslookupEntry:
 class NslookupAdapter(Adapter):
     name = "nslookup"
     executable = "nslookup"
+    version_cmd = ["-version"]
+    help_cmd = ["-version"]
+    test_args = version_cmd
     help_List = {
         "domain": None,
         "record_type": None,

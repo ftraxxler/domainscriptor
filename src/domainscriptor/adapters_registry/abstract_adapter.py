@@ -41,6 +41,8 @@ class Adapter(ABC):
     help_List: List = None
     default_timeout: float = 300  # Sekunden
     returnCode_version = 0
+    version_cmd = ["--version"]
+    help_cmd = ["--help"]
     run_background = False
     test_args = None
 
@@ -98,10 +100,9 @@ class Adapter(ABC):
         raise NotImplementedError
 
     def version(self, timeout: int = 5):
-        args = ["--version"]
         try:
             result = subprocess.run(
-                [self.executable, *args],
+                [self.executable, *self.version_cmd],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,
@@ -114,10 +115,10 @@ class Adapter(ABC):
             raise RuntimeError(f"Error running command")
 
     def help(self, timeout: int = 5):
-        args = ["--help"]
+        
         try:
             result = subprocess.run(
-                [self.executable, *args],
+                [self.executable, *self.help_cmd],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,

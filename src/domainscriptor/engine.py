@@ -275,47 +275,74 @@ class Engine:
         except FileNotFoundError:
             typer.echo(f"Targets file not found")
 
-    def check_smb_security(self, ip=None,proxy=False):
+    def _print_check_header(self, label: str, index: int, total: int, vuln: str, creds_required: bool):
+        bar = "━" * 60
+        creds_tag = typer.style("auth", fg=typer.colors.CYAN) if creds_required else typer.style("no auth", fg=typer.colors.MAGENTA)
+        counter = typer.style(f"[{index}/{total}]", fg=typer.colors.WHITE, bold=True)
+        protocol = typer.style(f"[{label}]", fg=typer.colors.YELLOW, bold=True)
+        name = typer.style(vuln, fg=typer.colors.WHITE, bold=True)
+        typer.echo(f"\n{bar}")
+        typer.echo(f" {counter} {protocol} {name}  ({creds_tag})")
+        typer.echo(bar)
+
+    def _print_check_summary(self, label: str, ip: str, total: int):
+        typer.echo("\n" + "━" * 60)
+        typer.secho(f" {label} scan complete — {total} checks run against {ip}", fg=typer.colors.GREEN, bold=True)
+        typer.echo("━" * 60 + "\n")
+
+    def check_smb_security(self, ip=None, proxy=False):
         relay = None
-        if proxy==True:
+        if proxy:
             relay = self._get_available_relays()
-        if self._check_adapter_exists("nxc"):
-            if not ip:
-                ip = typer.prompt("Enter IP to check")
+        if not self._check_adapter_exists("nxc"):
+            return
+        if not ip:
+            ip = typer.prompt("Enter IP to check")
 
-            for checks in get_smb_security_commands():
-                parameters = checks["parameters"]
-                parameters["target"] = ip
-                if proxy and relay and checks["creds_required"]:
-                    parameters["proxy"] = str(proxy)
-                    domain,username = relay.user.split("/")
-                    parameters["domain"]=domain
-                    parameters["username"]=username
-                elif not checks["creds_required"]:
-                    parameters["username"]=''
-                    parameters["password"]=''
-                result = self.run_task("nxc", **parameters)
+        commands = get_smb_security_commands()
+        total = len(commands)
+        for i, checks in enumerate(commands, start=1):
+            self._print_check_header("SMB", i, total, checks["vuln"], checks["creds_required"])
+            parameters = checks["parameters"].copy()
+            parameters["target"] = ip
+            if proxy and relay and checks["creds_required"]:
+                parameters["proxy"] = str(proxy)
+                domain, username = relay.user.split("/")
+                parameters["domain"] = domain
+                parameters["username"] = username
+            elif not checks["creds_required"]:
+                parameters["username"] = ""
+                parameters["password"] = ""
+            self.run_task("nxc", **parameters)
 
-    def check_ldap_security(self, ip=None,proxy=False):
+        self._print_check_summary("SMB", ip, total)
+
+    def check_ldap_security(self, ip=None, proxy=False):
         relay = None
-        if proxy==True:
+        if proxy:
             relay = self._get_available_relays()
-        if self._check_adapter_exists("nxc"):
-            if not ip:
-                ip = typer.prompt("Enter IP to check")
+        if not self._check_adapter_exists("nxc"):
+            return
+        if not ip:
+            ip = typer.prompt("Enter IP to check")
 
-            for checks in get_ldap_security_commands():
-                parameters = checks["parameters"]
-                parameters["target"] = ip
-                if proxy and relay and checks["creds_required"]:
-                    parameters["proxy"] = str(proxy)
-                    domain, username = relay.user.split("/")
-                    parameters["domain"] = domain
-                    parameters["username"] = username
-                elif not checks["creds_required"]:
-                    parameters["username"]=''
-                    parameters["password"]=''
-                result = self.run_task("nxc", **parameters)
+        commands = get_ldap_security_commands()
+        total = len(commands)
+        for i, checks in enumerate(commands, start=1):
+            self._print_check_header("LDAP", i, total, checks["vuln"], checks["creds_required"])
+            parameters = checks["parameters"].copy()
+            parameters["target"] = ip
+            if proxy and relay and checks["creds_required"]:
+                parameters["proxy"] = str(proxy)
+                domain, username = relay.user.split("/")
+                parameters["domain"] = domain
+                parameters["username"] = username
+            elif not checks["creds_required"]:
+                parameters["username"] = ""
+                parameters["password"] = ""
+            self.run_task("nxc", **parameters)
+
+        self._print_check_summary("LDAP", ip, total)
 
     def _choose_database(self, db_files, db_dir):
         if db_files:

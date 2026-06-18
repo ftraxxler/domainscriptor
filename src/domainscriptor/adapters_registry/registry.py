@@ -1,5 +1,7 @@
 from typing import Dict, List, Type
 
+import typer
+
 from domainscriptor.adapters_registry.abstract_adapter import Adapter
 
 
@@ -9,8 +11,11 @@ class Adapter_Registry:
 
     def register(self, adapter_cls: type) -> type:
         name = adapter_cls.name.lower()
-        self._adapters[name] = adapter_cls
-        adapter_cls.can_run()
+        try:
+            adapter_cls.can_run()
+            self._adapters[name] = adapter_cls
+        except RuntimeError as e:
+            typer.secho(f"⚠  {adapter_cls.executable} nicht verfügbar – Adapter deaktiviert: {e}", fg=typer.colors.YELLOW)
         return adapter_cls
 
     def create(self, name: str, **config):
