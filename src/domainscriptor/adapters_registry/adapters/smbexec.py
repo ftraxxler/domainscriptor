@@ -1,3 +1,4 @@
+import shlex
 from ..abstract_adapter import Adapter, AdapterError
 from typing import Optional, List
 
@@ -35,10 +36,13 @@ class SMBExecAdapter(Adapter):
         if command:
             cmd += ["-x", command]
         if extra_args:
-            cmd.append(extra_args)
+            cmd.extend(shlex.split(extra_args) if isinstance(extra_args, str) else extra_args)
         return cmd
 
-    def parse_output(self, stdout: str, stderr: str):
+    def normalizer(self, entries):
+        return None
+
+    def parse_output(self, stdout: str):
         parsed = {}
         if "Access denied" in stdout or "ACCESS_DENIED" in stdout.upper():
             parsed["auth"] = "denied"

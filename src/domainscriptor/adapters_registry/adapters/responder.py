@@ -1,3 +1,4 @@
+import shlex
 from ..abstract_adapter import Adapter, AdapterError
 from typing import Optional, List
 from domainscriptor.adapters_registry.adapters.watcher.ResponderWatcher import ResponderLogWatcher
@@ -23,7 +24,7 @@ class ResponderAdapter(Adapter):
             raise AdapterError("interface erforderlich", tool=self.executable)
         cmd = [self.executable, "-I", interface]
         if extra_args:
-            cmd.append(extra_args)
+            cmd.extend(shlex.split(extra_args) if isinstance(extra_args, str) else extra_args)
         return cmd
 
     def parse_output(self, stdout: str):

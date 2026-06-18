@@ -167,16 +167,12 @@ class Runner:
             self.stop_process(name)
 
     def get_relays(self):
-        if self.running_processes["impacket-ntlmrelayx"]:
-            jobs = self.running_processes["impacket-ntlmrelayx"]
-            if not jobs:
-                typer.echo("Keine Jobs für 'impacket-ntlmrelayx' gefunden")
-                return None
-            for job in jobs:
-                if job.name == "impacket-ntlmrelayx-watcher":
-                    ntlmrelay_watcher = job.watcher
-                    return ntlmrelay_watcher.get_latest_entries()
-            typer.echo("Watcher not running")
-        else:
+        jobs = self.running_processes.get("impacket-ntlmrelayx")
+        if not jobs:
             typer.echo("Impacket-NTLMRelay not running")
+            return None
+        for job in jobs:
+            if job.name == "impacket-ntlmrelayx-watcher":
+                return job.watcher.get_latest_entries()
+        typer.echo("Watcher not running")
         return None

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 import shutil
 import subprocess
 import threading
@@ -10,12 +11,13 @@ from domainscriptor import Runner
 from domainscriptor.data.db_writer import InsertCanonical
 
 
+@dataclass
 class AdapterResult:
     ok: bool
     returncode: int
     stdout: str
     stderr: str
-    parsed: Optional[Dict[str, Any]] = None
+    parsed: Optional[Dict[str, Any]] = field(default=None)
 
 
 class AdapterError(RuntimeError):
@@ -88,6 +90,7 @@ class Adapter(ABC):
         """
         return None
 
+    @abstractmethod
     def normalizer(self, entries):
         """
         Converts tool specific data to the normalized data

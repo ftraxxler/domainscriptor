@@ -13,8 +13,6 @@ from domainscriptor.engine import Engine
 from . import project_info
 from .cli_completioner import MainCompleter, RuncommandCompleter, StopProcessCompleter
 
-engine = None
-
 info = project_info()
 
 argument_handler = typer.Typer(
@@ -143,6 +141,7 @@ def start():
             "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None},
             "targets": None,
             "relayable": None,
+            "ai": {"suggest": None, "analyze": None},
         }
     base_completer = NestedCompleter.from_nested_dict(commands)
     runcommand_completer = RuncommandCompleter(adapter_helps)
@@ -182,7 +181,7 @@ def start():
                 continue
             except click.exceptions.UsageError as exc:
                 typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
-            except Exception as excpetion:
+            except Exception as exc:
                 typer.secho(f"Unknow Error happen", fg=typer.colors.RED)
                 typer.secho(f"{traceback.print_exc()}", fg=typer.colors.RED)
 
@@ -302,4 +301,24 @@ def relayable(ctx: typer.Context):
     Prints out the relayable targets
     """
     eng: Engine = ctx.obj
-    eng.get_relayable()
+    eng.show_relayable()
+
+
+@argument_handler.command()
+def ai(ctx: typer.Context, action: str = typer.Argument(..., help="suggest | analyze")):
+    """
+    AI-powered assistant. 'suggest' recommends next commands; 'analyze' scans findings for vulnerabilities.
+    Requires OPENROUTER_API_KEY environment variable.
+    """
+    eng: Engine = ctx.obj
+    try:
+        if action == "suggest":
+            typer.echo("Asking AI for next steps ...")
+            typer.echo(eng.ai_suggest())
+        elif action == "analyze":
+            typer.echo("Asking AI to analyze findings ...")
+            typer.echo(eng.ai_analyze())
+        else:
+            typer.secho(f"Unknown action '{action}'. Use 'suggest' or 'analyze'.", fg=typer.colors.RED)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED)

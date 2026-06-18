@@ -1,3 +1,4 @@
+import shlex
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from .watcher.NTLMRelayWatcher import NTLMRelayWatcher
@@ -91,7 +92,7 @@ class NTLMRelayAdapter(Adapter):
             cmd += ["-c", command]
 
         if extra_args:
-            cmd.append(extra_args)
+            cmd.extend(shlex.split(extra_args) if isinstance(extra_args, str) else extra_args)
 
         return cmd
 

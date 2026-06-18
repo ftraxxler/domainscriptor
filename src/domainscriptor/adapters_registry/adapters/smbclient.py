@@ -1,3 +1,4 @@
+import shlex
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -163,7 +164,7 @@ class SMBClientAdapter(Adapter):
             cmd += ["-c", "recurse;" + command]
 
         if extra_args:
-            cmd.append(extra_args)
+            cmd.extend(shlex.split(extra_args) if isinstance(extra_args, str) else extra_args)
 
         if proxy:
             proxychain = ["proxychains", "-q"]
@@ -172,6 +173,7 @@ class SMBClientAdapter(Adapter):
         self.ip_hostname = target
         return cmd
 
+    @staticmethod
     def prettify(entries: List[SmbEntry]):
         output = ""
         header = f"{'NAME':40} {'TYPE':6} {'SIZE':>8} {'MODIFIED':20} {'KIND'}\n"

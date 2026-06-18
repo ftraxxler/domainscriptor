@@ -9,8 +9,10 @@ from typing import List, Tuple
 import typer
 from domainscriptor.Runner import Runner
 from domainscriptor.automations import *
+from domainscriptor.ai_client import OpenRouterClient
 from domainscriptor.adapters_registry.adapters.ntlmrelayx import NTLMRelayAdapter
 from domainscriptor.adapters_registry.adapters.nmap import NmapAdapter
+from domainscriptor.adapters_registry.adapters.nslookup import NslookupAdapter
 from domainscriptor.adapters_registry.adapters.nxc import NXCAdapter
 from domainscriptor.adapters_registry.adapters.proxychains import ProxychainsAdapter
 from domainscriptor.adapters_registry.adapters.responder import ResponderAdapter
@@ -97,6 +99,7 @@ class Engine:
         self.adapter_registry.register(NXCAdapter)
         self.adapter_registry.register(ProxychainsAdapter)
         self.adapter_registry.register(NmapAdapter)
+        self.adapter_registry.register(NslookupAdapter)
 
     def init_database_connection(self, db_dir: str = "."):
         self.queue = Queue()
@@ -212,25 +215,37 @@ class Engine:
             typer.echo(typer.style(str(e), fg=typer.colors.RED, bold=True))
 
     def get_dcs(self):
+        ips = []
+
         if self._check_adapter_exists("nxc") and self.get_default_Credentials():
             ip = typer.prompt("Enter IP for DC check")
             result = self.run_task("nxc", return_output=True,
                                    **{'protocol': 'ldap', 'target': ip, 'extra_args': '--dc-list'})
             result = result[0]
-            ips = []
             for entry in result.data:
-                for ip in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", entry["message"]):
-                    if ip not in ips:
-                        ips.append(ip)
+                for found_ip in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", entry["message"]):
+                    if found_ip not in ips:
+                        ips.append(found_ip)
 
-            typer.echo(f"IPS {ips}")
+        elif self._check_adapter_exists("nslookup"):
+            domain = typer.prompt("Enter domain for DC lookup (e.g. corp.local)")
+            result = self.run_task("nslookup", return_output=True, **{'domain': domain})
+            if result:
+                for entry in result:
+                    for item in entry.data:
+                        candidate = item.get("ip") or item.get("hostname", "")
+                        if candidate and candidate not in ips:
+                            ips.append(candidate)
 
         else:
-            pass
+            typer.echo("Neither nxc (with credentials) nor nslookup is available.")
+            return
 
+        typer.echo(f"Found DCs: {ips}")
         with open("dc_ips.txt", "w", encoding="utf-8") as f:
-            for ip in ips:
-                f.write(ip + "\n")
+            for found_ip in ips:
+                f.write(found_ip + "\n")
+        typer.echo("Saved to dc_ips.txt")
 
     def get_relayable(self):
         if self._check_adapter_exists("nxc"):
@@ -250,7 +265,7 @@ class Engine:
         except FileNotFoundError:
             typer.echo(f"Targets file not found")
 
-    def get_relayable(self):
+    def show_relayable(self):
         try:
             with open("smb_relayable.txt") as f:
                 typer.echo(f"SMB Relayable Targets:")
@@ -355,6 +370,51 @@ class Engine:
     def _check_adapter_exists(self, adapter_name):
         return adapter_name in self.adapter_registry.list_names()
 
+    # ── AI helpers ────────────────────────────────────────────────────────────
+
+    def _build_ai_client(self) -> OpenRouterClient:
+        try:
+            return OpenRouterClient()
+        except EnvironmentError as e:
+            raise RuntimeError(str(e))
+
+    def ai_suggest(self) -> str:
+        client = self._build_ai_client()
+        adapters = ", ".join(self.adapter_registry.list_names())
+        findings = self.db_reader.fetch_all()
+        settings = self.get_default_Credentials()
+        domain = settings.domain if settings else "unknown"
+
+        system = (
+            "You are an Active Directory penetration testing expert. "
+            "The user is running Domainscriptor, a CLI framework that wraps AD pentesting tools. "
+            "Based on the context below, suggest the 3-5 most valuable next steps as concrete Domainscriptor commands. "
+            "Format each suggestion as a ready-to-paste command with a one-line explanation. "
+            "Only use adapters that are listed as available. Be concise and actionable."
+        )
+        user = (
+            f"Available adapters: {adapters}\n"
+            f"Target domain: {domain}\n\n"
+            f"Collected findings so far:\n{findings if findings else '(none yet)'}"
+        )
+        return client.chat(system, user)
+
+    def ai_analyze(self) -> str:
+        client = self._build_ai_client()
+        findings = self.db_reader.fetch_all()
+        if not findings or findings.strip() == "":
+            return "No data in the database yet. Run some commands first (e.g. shortcuts smb_check)."
+
+        system = (
+            "You are a senior Active Directory security analyst. "
+            "Analyze the penetration test findings below and identify: "
+            "1) confirmed vulnerabilities or misconfigurations, "
+            "2) potential attack paths (e.g. relay chains, privilege escalation), "
+            "3) recommended remediation steps. "
+            "Structure your response with clear headings. Be specific about IPs and protocols where relevant."
+        )
+        user = f"Pentest findings:\n\n{findings}"
+        return client.chat(system, user)
 
     def _get_available_relays(self):
         relays = self.runner.get_relays()

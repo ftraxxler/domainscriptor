@@ -2,7 +2,7 @@ import re
 import shlex
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 import typer
 
@@ -155,7 +155,6 @@ class NXCAdapter(Adapter):
             cmd = proxychain + cmd
 
         self.used_protocol = protocol
-        print(cmd)
         return cmd
 
     def normalizer(self, entries):
