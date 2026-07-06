@@ -1,131 +1,236 @@
 # DomainScriptor
 
+> Ein CLI-Framework, das ausgewählte Active-Directory-Pentest-Werkzeuge unter einer Oberfläche vereint. Automatisiert Prüfungen, normalisiert Ergebnisse in einer zentralen Datenbank und bietet KI-gestützte Analyse und Befehlsvorschläge.
 
+![DomainScriptor](image.png)
 
-## Installieren
+---
+
+## Inhalt
+
+- [Installation](#installation)
+- [Konfiguration](#konfiguration)
+  - [Tool-Konfiguration](#tool-konfiguration)
+  - [KI-Anbindung (.env)](#ki-anbindung-env)
+- [Start](#start)
+- [Befehle](#befehle)
+- [Shortcuts](#shortcuts)
+- [KI-Assistent](#ki-assistent)
+- [Beispiele](#beispiele)
+- [Kompatibilität](#kompatibilität)
+
+---
+
+## Installation
 
 ```bash
-python -m venv .venv # Wird empfohlen
+python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-![DomainScriptor Version](image.png)
+---
 
-Start des Domainscriptors:
+## Konfiguration
+
+### Tool-Konfiguration
+
+Für Responder und ntlmrelayx müssen vor dem ersten Einsatz folgende Einstellungen angepasst werden.
+
+**`/etc/responder/Responder.conf`** — SMB und HTTP deaktivieren, damit ntlmrelayx diese Ports nutzen kann:
+
+```ini
+SMB  = Off
+HTTP = Off
+```
+
+**`/etc/proxychains4.conf`** — Port für SOCKS-Proxy auf 1080 setzen:
+
+```ini
+socks4  127.0.0.1 1080
+```
+
+### KI-Anbindung (.env)
+
+Domainscriptor unterstützt drei KI-Anbieter für den integrierten Assistenten. Eine `.env`-Datei im Arbeitsverzeichnis reicht aus — kein Export von Umgebungsvariablen nötig.
+
+```ini
+# Aktiven Anbieter wählen: openrouter | anthropic | openai
+AI_PROVIDER=anthropic
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_MODEL=claude-haiku-4-5-20251001   # optional, das ist der Standard
+
+# OpenRouter
+# OPENROUTER_API_KEY=sk-or-...
+# OPENROUTER_MODEL=anthropic/claude-haiku-4-5
+
+# OpenAI
+# OPENAI_API_KEY=sk-...
+# OPENAI_MODEL=gpt-4o-mini
+```
+
+> Manuell gesetzte Umgebungsvariablen haben immer Vorrang vor der `.env`-Datei.
+
+---
+
+## Start
+
 ```bash
 domainscriptor start
 ```
 
-#### Notwendige Tool Konfiguration
+Beim ersten Start wird abgefragt:
+- Ob initiale Zugangsdaten (Domain, User, Passwort) hinterlegt werden sollen
+- Der Ziel-IP-Bereich (wird in `targets.txt` gespeichert)
+- Name der Datenbank (oder Auswahl einer bestehenden)
 
-Für die Verwendung von Responder und ntlmrelayx müssen folgende Einstellungen angepasst werden
-In /etc/responder/Responder.conf müssen SMB und HTTP abgedreht werden
+---
 
-```bash
-; Servers to start
-SMB      = Off
-HTTP     = Off
+## Befehle
+
+Alle Befehle werden innerhalb der interaktiven Shell (`domainscriptor start`) ausgeführt. Tab-Completion ist verfügbar.
+
+| Befehl | Beschreibung |
+|--------|-------------|
+| `help [adapter]` | Allgemeine Hilfe oder Adapter-spezifische Hilfe |
+| `version [adapter]` | Version von Domainscriptor oder eines Adapters |
+| `showadapters` | Alle registrierten und verfügbaren Adapter anzeigen |
+| `showprocesses` | Laufende Hintergrundprozesse anzeigen |
+| `stopprocess <name>` | Hintergrundprozess beenden |
+| `runcommand <adapter> [param=wert ...]` | Befehl über einen bestimmten Adapter ausführen |
+| `fetch [byIp\|byProtocol\|byToolname\|search] [wert]` | Daten aus der Datenbank abrufen |
+| `settings [add\|delete <id>]` | Zugangsdaten verwalten |
+| `targets` | Konfigurierte Ziel-IPs anzeigen |
+| `relayable` | Relayable Hosts aus `smb_relayable.txt` anzeigen |
+| `shortcuts <shortcut> [proxy]` | Vordefinierte Befehlssequenzen ausführen |
+| `ai <suggest\|analyze>` | KI-Assistent: Vorschläge oder Schwachstellenanalyse |
+
+### fetch
+
+Liest normalisierte Ergebnisse aus der SQLite-Datenbank.
+
+```
+fetch                        → alle Einträge
+fetch byIp 192.168.0.1       → nach IP filtern
+fetch byProtocol SMB         → nach Protokoll filtern
+fetch byToolname nxc         → nach Tool filtern
+fetch search zerologon       → Volltextsuche
 ```
 
-Für die Verwendung von Proxychains mit ntlmrelay muss der Port in /etc/proxychains4.conf auf 1080 angepasst werden
-```bash
-socks4  127.0.0.1 1080
+### settings
+
+Speichert Zugangsdaten für automatisierte Checks (Domain, User, Passwort).
+
+```
+settings                     → aktuelle Einträge anzeigen
+settings add                 → neuen Eintrag hinzufügen
+settings delete <id>         → Eintrag löschen
 ```
 
-Für folgende Versionen wurden Tests durchgeführt
-- Ntlmrelayx - v0.14.0.dev
-- Nxc - 1.5.1
-- Responder 3.2.2.0
-- smbclient - 4.23.6-Debian-4.23.6+dfsg-1+b1
-- smbexec - v0.14.0.dev0
+---
 
-Ein Kali Linux 2026.1 hat diese Versionen derzeit bereits installiert
+## Shortcuts
 
-### Befehle
+Vordefinierte Befehlssequenzen für häufige Prüfungen.
 
-#### help
-Zeigt die allgemeine Hilfe oder die Hilfe zu einem bestimmten Befehl an. Wenn ein Adaptername angegeben wird, wird die Hilfe für die Befehle und Optionen dieses Adapters angezeigt.
+| Shortcut | Beschreibung |
+|----------|-------------|
+| `shortcuts get_relayable` | Welche Hosts sind SMB-relayable? → `smb_relayable.txt` |
+| `shortcuts get_dc` | Domaincontroller suchen → `dc_ips.txt` (via nxc oder nslookup-Fallback) |
+| `shortcuts smb_check [proxy]` | Vollständiger SMB-Sicherheitscheck (11 Prüfungen) |
+| `shortcuts ldap_check [proxy]` | Vollständiger LDAP-Sicherheitscheck (10 Prüfungen) |
 
-#### version
+`smb_check` und `ldap_check` führen die Checks strukturiert mit Kopfzeilen aus:
 
-Gibt die Versionsnummer von Domainscriptor aus. Wenn ein Adaptername angegeben wird, werden zusätzlich die Versionsinformationen dieses Adapters angezeigt, sofern verfügbar.
-
-#### showadapters
-Listet alle registrierten Adapter auf, einschließlich Name, Typ und aktuellem Status (aktiviert/deaktiviert).
-
-#### showprocesses
-Zeigt die von Domainscriptor gestarteten Hintergrundprozesse an.
-
-#### stopprocesses
-Beendet einen Hintergrundprozess anhand seines Namens. Mit der Prozessübersicht können die gültigen Namen eingesehen werden.
-
-#### runcommand
-Führt einen Befehl innerhalb eines bestimmten Adapters aus. Damit lassen sich adapter-spezifische Aktionen ausführen, ohne einen vollständigen Workflow zu starten.
-
-#### fetch
-Ruft Daten von Adaptern ab und speichert sie in der Datenbank (z. B. Erkennungen/Ergebnisse). Dies wird in der Regel nach dem Start oder nach dem Ausführen von Adapter-Befehlen verwendet.
-- Ohne Parameter liefert alle Einträge aus der Datenbank
-- "byIp" filtert nach einer bestimmten IP zb. "192.168.0.1"
-- "byProtocol" filtert nach einem bestimmten Protokoll zb. "SMB"
-- "byToolname" filtert nach einem bestimmten Toolnamen zb. "nxc"
-- "search" ermöglicht eine Volltextsuche in den Daten
-
-#### settings
-Es ist möglich vordefinierte Einstellungen zu hinterlegen: Domain, Username und Passwort.
-- Ohne Parameter liefert die aktuellen Einstellungen
-- "add" ermöglicht es neue Einträge hinzuzufügen
-- "delete" ermöglicht es unter angabe der ID einen Eintrag zu löschen
-
-
-#### shortcuts
-Diese sollen häufige Befehle vereinfach und beschleunigen
-- "get_relayable" schaut welche targets relayable sind und speichert die Resultate in smb_relayable.txt
-  - target.txt mit Scope notwendig
-- "get_dc" sucht die Domaincontroller in einem Netzwerk und speichert sie in dc_ips.txt
-- "smb_check" führt mehrere Befehle gegen die selbe IP durch die das Ziel auf klassische Sicherheitslücken in SMB überprüft
-- "ldap_check" führt mehrere Befehle gegen die selbe IP durch die das Ziel auf klassische Sicherheitslücken in LDAP überprüft
-
-
-
-### Beispiel Befehle
-
-SMB-Share ls Abfrage
-
-```bash
-runcommand smbclient target=127.0.0.1 share=SHARE username=test password=test command=ls
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ [1/11] [SMB] Zerologon  (no auth)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ SMB scan complete — 11 checks run against 192.168.1.5
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Check for LDAP signing
+**SMB-Checks:** Zerologon, NoPAC, PrintNightmare, SMBGhost, NTLM-Reflection, GPP-Autologin, GPP-Password, Password-Policy, Coerce+, Null Session, Guest Logon
 
-```bash
-runcommand nxc protocol=ldap target=192.168.3.5 module=ldap-checker username=username password='passwort'
+**LDAP-Checks:** ASREPRoasting, User-Descriptions, User-Passwords, Unix-Passwords, ADCS, Domain Trusts, LAPS, LDAP-Signing, Machine-Quota
+
+---
+
+## KI-Assistent
+
+Benötigt einen konfigurierten Anbieter in der `.env` (siehe [KI-Anbindung](#ki-anbindung-env)).
+
+```
+ai suggest      → KI schlägt konkrete nächste Domainscriptor-Befehle vor
+ai analyze      → KI analysiert alle DB-Findings auf Schwachstellen und Angriffspfade
 ```
 
+Die KI bekommt als Kontext: verfügbare Adapter, gesammelte Findings aus der DB und die konfigurierte Zieldomain.
 
-Starte Responder
+---
 
-```bash
+## Beispiele
+
+**SMB-Share auflisten**
+```
+runcommand smbclient target=192.168.1.10 share=SYSVOL username=user password=pass command=ls
+```
+
+**LDAP-Signing prüfen**
+```
+runcommand nxc protocol=ldap target=192.168.1.5 module=ldap-checker
+```
+
+**Responder starten**
+```
 runcommand responder interface=eth0 extra_args=-w
 ```
 
-Starte ntlmrelayx
-```bash
-runcommand ntlmrelayx target_file=targets.txt
+**ntlmrelayx starten**
+```
+runcommand ntlmrelayx target_file=smb_relayable.txt
 ```
 
-Get SMB relayable hosts
-
-```bash
+**Relayable Hosts ermitteln und direkt SMB-Check durchführen**
+```
 shortcuts get_relayable
-```
-
-
-Check SMB security
-
-```bash
 shortcuts smb_check
 ```
 
+**Domaincontroller suchen (mit Fallback auf nslookup)**
+```
+shortcuts get_dc
+```
 
+**Nmap-Scan**
+```
+runcommand nmap target=192.168.1.0/24 ports=445,389,88 service_detection=true
+```
 
+**KI-Analyse nach einem Scan**
+```
+shortcuts smb_check
+ai analyze
+```
+
+---
+
+## Kompatibilität
+
+Getestet auf **Kali Linux 2026.1** mit folgenden Tool-Versionen:
+
+| Tool | Version |
+|------|---------|
+| impacket-ntlmrelayx | v0.14.0.dev |
+| NetExec (nxc) | 1.5.1 |
+| Responder | 3.2.2.0 |
+| smbclient | 4.23.6 |
+| impacket-smbexec | v0.14.0.dev0 |
+
+---
+
+*by Fabian Traxler*

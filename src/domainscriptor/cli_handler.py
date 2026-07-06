@@ -123,6 +123,7 @@ def start():
     try:
         engine = Engine(argument_handler)
         engine.init_database_connection()
+        engine.start_webui()
     except RuntimeError as runtimeError:
         typer.secho(f"Error: {runtimeError.args[0]}", fg=typer.colors.RED)
         raise typer.Exit()
@@ -239,9 +240,8 @@ def settings(
         typer.echo(eng.get_settings())
     elif field == "delete":
         if setting_id:
-            typer.echo("Following entry will be deleted:")
-            typer.echo(eng.get_settings_by_id(setting_id))
-            if typer.confirm("Are you sure you want to delete this setting?"):
+            table = eng.get_settings_by_id(setting_id)
+            if typer.confirm(f"Following entry will be deleted:\n{table}\nAre you sure?"):
                 eng.delete_setting(setting_id)
         else:
             typer.echo("Entry ID is required")

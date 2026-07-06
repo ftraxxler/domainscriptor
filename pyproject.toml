@@ -16,6 +16,8 @@ dependencies = [
   "netifaces>=0.11.0",     # Necessary for responder
   "aioquic>=1.3.0",        # Necessary for responder
   "click>=8.4.0",
+  "python-dotenv>=1.0",    # .env config file support
+  "flask>=3.0",            # Web UI
 ]
 
 [project.optional-dependencies]

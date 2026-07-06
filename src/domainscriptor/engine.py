@@ -9,7 +9,7 @@ from typing import List, Tuple
 import typer
 from domainscriptor.Runner import Runner
 from domainscriptor.automations import *
-from domainscriptor.ai_client import OpenRouterClient
+from domainscriptor.ai_client import get_ai_client
 from domainscriptor.adapters_registry.adapters.ntlmrelayx import NTLMRelayAdapter
 from domainscriptor.adapters_registry.adapters.nmap import NmapAdapter
 from domainscriptor.adapters_registry.adapters.nslookup import NslookupAdapter
@@ -292,7 +292,7 @@ class Engine:
 
     def check_smb_security(self, ip=None, proxy=False):
         relay = None
-        if proxy:
+        if proxy==True:
             relay = self._get_available_relays()
         if not self._check_adapter_exists("nxc"):
             return
@@ -397,11 +397,18 @@ class Engine:
     def _check_adapter_exists(self, adapter_name):
         return adapter_name in self.adapter_registry.list_names()
 
+    # ── Web UI ────────────────────────────────────────────────────────────────
+
+    def start_webui(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+        from domainscriptor.web import start_in_thread
+        start_in_thread(self.db_reader, host=host, port=port)
+        typer.secho(f"Web UI: http://{host}:{port}", fg=typer.colors.CYAN)
+
     # ── AI helpers ────────────────────────────────────────────────────────────
 
-    def _build_ai_client(self) -> OpenRouterClient:
+    def _build_ai_client(self):
         try:
-            return OpenRouterClient()
+            return get_ai_client()
         except EnvironmentError as e:
             raise RuntimeError(str(e))
 
