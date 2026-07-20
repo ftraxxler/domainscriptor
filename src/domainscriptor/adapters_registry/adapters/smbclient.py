@@ -64,11 +64,24 @@ class SmbEntry:
 @dataclass()
 class SmbShare:
     name: str
-    extention: str
-    raw_type: int
-    size: str
-    mtime: datetime
-    is_dir: bool
+    share_type: str
+    comment: str
+
+    def to_dict(self):
+        return asdict(self)
+
+
+_SMBCLIENT_SHARE_RE = re.compile(
+    r"""
+        ^\s*
+        (?P<name>\S.*?)                 # Sharename (non-greedy)
+        \s{2,}
+        (?P<type>Disk|IPC|Printer)       # Type-Spalte (grenzt Header/Trenner-Zeilen aus)
+        (?:\s{2,}(?P<comment>.*\S))?
+        \s*$
+        """,
+    re.VERBOSE,
+)
 
 
 class SmbclientParseError(Exception):
@@ -93,10 +106,12 @@ class SMBClientAdapter(Adapter):
         "share": None,
         "domain": None,
         "recursive": None,
+        "list_shares": None,
         "extra_args": None,
         "proxy": None
     }
     ip_hostname = ""
+    mode = "ls"
 
     def build_command(
             self,
@@ -107,6 +122,7 @@ class SMBClientAdapter(Adapter):
             password: Optional[str] = None,
             share: Optional[str] = None,
             recursive: Optional[bool] = None,
+            list_shares: Optional[bool] = None,
             extra_args: Optional[List[str]] = None,
             proxy: Optional[bool] = None,
             auth: Optional[SettingsDataModel] = None,
@@ -120,6 +136,8 @@ class SMBClientAdapter(Adapter):
         - username/password: werden in -U "user%pass" zusammengeführt (oder nur user bei -U user)
         - domain: optional -W DOMAIN
         - command: optional -c "<command>" (z.B. "ls" oder "get foo")
+        - list_shares: wenn True -> `smbclient -L target` (listet alle Freigaben des Hosts,
+          kein -c, keine Verbindung zu einem einzelnen Share)
         - extra_args: weitere Argumente (als Liste)
         """
         if not target:
@@ -132,10 +150,12 @@ class SMBClientAdapter(Adapter):
             if not domain and not (auth and auth.domain):
                 raise AdapterError("Domain erforderlich für proxychain", tool=self.executable)
 
-        share = share or "IPC$"
-        uri = f"//{target}/{share}"
-
-        cmd: List[str] = [self.executable, uri]
+        if list_shares:
+            cmd: List[str] = [self.executable, "-L", target]
+        else:
+            share = share or "IPC$"
+            uri = f"//{target}/{share}"
+            cmd = [self.executable, uri]
 
         if not username and auth and auth.username:
             username = auth.username
@@ -157,11 +177,11 @@ class SMBClientAdapter(Adapter):
 
         cmd += ["-U", user_spec]
 
-
-        if command and not recursive:
-            cmd += ["-c", command]
-        elif recursive:
-            cmd += ["-c", "recurse;" + command]
+        if not list_shares:
+            if command and not recursive:
+                cmd += ["-c", command]
+            elif recursive:
+                cmd += ["-c", "recurse;" + command]
 
         if extra_args:
             cmd.extend(shlex.split(extra_args) if isinstance(extra_args, str) else extra_args)
@@ -171,6 +191,7 @@ class SMBClientAdapter(Adapter):
             cmd = proxychain + cmd
 
         self.ip_hostname = target
+        self.mode = "list_shares" if list_shares else "ls"
         return cmd
 
     @staticmethod
@@ -188,6 +209,16 @@ class SMBClientAdapter(Adapter):
 
         return output
 
+    @staticmethod
+    def prettify_shares(shares: List[SmbShare]):
+        output = ""
+        header = f"{'SHARE':30} {'TYPE':8} {'COMMENT'}\n"
+        output += header
+        output += "-" * len(header) + "\n"
+        for s in shares:
+            output += f"{s.name:30} {s.share_type:8} {s.comment}\n"
+        return output
+
     def normalizer(self, entries):
         protocol = "SMB"
         data = [e.to_dict() for e in entries]
@@ -195,13 +226,31 @@ class SMBClientAdapter(Adapter):
                                                    data)
         return canonical_data_object
 
-    def parse_output(self, stdout: str):
+    def normalizer_shares(self, shares):
+        protocol = "SMB"
+        data = [s.to_dict() for s in shares]
+        canonical_data_object = CanonicalDataModel(protocol, self.ip_hostname, self.name, datetime.now().isoformat(),
+                                                   data)
+        return canonical_data_object
+
+    def parse_entries(self, stdout: str) -> List[SmbEntry]:
+        """
+        Parst `ls`/`recurse;ls`-Output in eine Liste von SmbEntry.
+        Bei recurse-Output tragen Zeilen wie `\\` oder `\\ordner\\` das aktuelle
+        Verzeichnis; nachfolgende Dateien werden mit vollem relativem Pfad
+        (z.B. `ordner\\datei.txt`) statt nur dem Dateinamen zurückgegeben.
+        """
         entries: List[SmbEntry] = []
-        ignore_dots = True
+        current_dir = ""
 
         for line in stdout.splitlines():
             line = line.rstrip("\n")
             if not line.strip():
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("\\"):
+                current_dir = stripped.strip("\\")
                 continue
 
             m = _SMBCLIENT_LS_RE.match(line)
@@ -210,7 +259,7 @@ class SMBClientAdapter(Adapter):
 
             name = m.group("name").strip()
 
-            if ignore_dots and name in (".", ".."):
+            if name in (".", ".."):
                 continue
 
             raw_type = m.group("type")
@@ -220,6 +269,7 @@ class SMBClientAdapter(Adapter):
             mtime = datetime.strptime(ts_str, "%a %b %d %H:%M:%S %Y")
 
             is_dir = raw_type == "D"
+            full_name = f"{current_dir}\\{name}" if current_dir else name
 
             if not is_dir:
                 suffix = Path(name).suffix
@@ -229,7 +279,7 @@ class SMBClientAdapter(Adapter):
 
             entries.append(
                 SmbEntry(
-                    name=name,
+                    name=full_name,
                     extention=extention,
                     raw_type=raw_type,
                     size=size,
@@ -238,5 +288,36 @@ class SMBClientAdapter(Adapter):
                 )
             )
 
+        return entries
+
+    def parse_share_entries(self, stdout: str) -> List[SmbShare]:
+        shares: List[SmbShare] = []
+
+        for line in stdout.splitlines():
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+
+            m = _SMBCLIENT_SHARE_RE.match(line)
+            if not m:
+                continue
+
+            shares.append(
+                SmbShare(
+                    name=m.group("name").strip(),
+                    share_type=m.group("type"),
+                    comment=(m.group("comment") or "").strip(),
+                )
+            )
+
+        return shares
+
+    def parse_output(self, stdout: str):
+        if getattr(self, "mode", "ls") == "list_shares":
+            shares = self.parse_share_entries(stdout)
+            typer.echo(SMBClientAdapter.prettify_shares(shares))
+            return self.normalizer_shares(shares)
+
+        entries = self.parse_entries(stdout)
         typer.echo(SMBClientAdapter.prettify(entries))
         return self.normalizer(entries)

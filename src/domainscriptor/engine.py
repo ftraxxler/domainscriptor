@@ -1,5 +1,6 @@
 from datetime import datetime
 import re
+import subprocess
 
 from queue import Queue
 from pathlib import Path
@@ -20,9 +21,10 @@ from domainscriptor.adapters_registry.adapters.smbexec import SMBExecAdapter
 from domainscriptor.adapters_registry.adapters.smbclient import SMBClientAdapter
 from domainscriptor.adapters_registry.abstract_adapter import Adapter
 from domainscriptor.adapters_registry.registry import Adapter_Registry
-from domainscriptor.data.canonical_db import SettingsDataModel
+from domainscriptor.data.canonical_db import CanonicalDataModel, SettingsDataModel
 from domainscriptor.data.db_reader import DBReader
 from domainscriptor.data.db_writer import DBWriter
+from domainscriptor.smb_loot import is_interesting, extract_text, search_credentials
 
 
 def _return_file_content(name, max_lines=15):
@@ -79,6 +81,60 @@ def _pretty_format_settings(settings: List[Tuple[str, SettingsDataModel]]):
     table = "\n".join([header_line, separator] + row_lines)
 
     return table
+
+
+def _format_share_diff(per_user: dict) -> str:
+    if not per_user:
+        return "No data collected."
+
+    users = list(per_user.keys())
+    all_shares = sorted({share for shares in per_user.values() for share in shares})
+
+    if not all_shares:
+        return "No shares discovered for any user."
+
+    header = ["SHARE"] + users
+    col_widths = [max(len(header[i]), 12) for i in range(len(header))]
+
+    def fmt_row(row):
+        return " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row))
+
+    lines = [fmt_row(header), "-+-".join("-" * w for w in col_widths)]
+
+    for share in all_shares:
+        row = [share]
+        for u in users:
+            info = per_user[u].get(share)
+            if info is None:
+                row.append("-")
+            elif info["access"] == "OK":
+                row.append(f"OK ({len(info['files'])})")
+            else:
+                row.append(info["access"])
+        lines.append(fmt_row(row))
+
+    diff_lines = ["", "File visibility differences per share:"]
+    found_diff = False
+    for share in all_shares:
+        visible_users = [u for u in users if per_user[u].get(share, {}).get("access") == "OK"]
+        if len(visible_users) < 2:
+            continue
+        file_sets = {u: per_user[u][share]["files"] for u in visible_users}
+        union = set().union(*file_sets.values())
+        if all(file_sets[u] == union for u in visible_users):
+            continue
+        found_diff = True
+        diff_lines.append(f"  [{share}]")
+        for u in visible_users:
+            others = set().union(*(s for other, s in file_sets.items() if other != u))
+            only_here = file_sets[u] - others
+            if only_here:
+                diff_lines.append(f"    only visible to {u}: {sorted(only_here)}")
+
+    if not found_diff:
+        diff_lines.append("  (no differences in visible files across users with access)")
+
+    return "\n".join(lines + diff_lines)
 
 
 class Engine:
@@ -343,6 +399,182 @@ class Engine:
             self.run_task("nxc", **parameters)
 
         self._print_check_summary("LDAP", ip, total)
+
+    def _smb_raw_run(self, cmd, timeout=20):
+        try:
+            return subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True,
+            )
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+            return None
+
+    def hunt_smb_credentials(self, target=None, shares=None, max_file_size=3_000_000):
+        """
+        Durchsucht SMB-Shares rekursiv nach interessanten Dateien (Konfigs, Skripte,
+        Office-Dokumente, ...), lädt Treffer nach loot/<target>/<share>/... herunter
+        und scannt deren Inhalt nach Zugangsdaten-Mustern.
+        """
+        if not self._check_adapter_exists("smbclient"):
+            typer.echo("smbclient adapter not available")
+            return
+
+        if not target:
+            target = typer.prompt("Enter target IP/hostname for SMB credential hunt")
+
+        auth = self.get_default_Credentials()
+        if not auth:
+            typer.echo("No credentials configured. Use 'settings add' first.")
+            return
+
+        if not shares:
+            list_adapter = self.create_adapter("smbclient")
+            cmd = list_adapter.build_command(target=target, list_shares=True, auth=auth)
+            result = self._smb_raw_run(cmd, timeout=30)
+            share_entries = list_adapter.parse_share_entries(result.stdout) if result else []
+            shares = [
+                s.name for s in share_entries
+                if s.share_type == "Disk"
+                and s.name.upper() not in {"ADMIN$", "C$", "IPC$"}
+                and not s.name.endswith("$")
+            ]
+
+        if not shares:
+            typer.echo("No accessible (non-administrative) shares found.")
+            return
+
+        typer.echo(f"Scanning shares on {target}: {shares}")
+
+        loot_root = Path("loot") / target
+        findings = []
+        scanned = 0
+        downloaded = 0
+
+        for share in shares:
+            ls_adapter = self.create_adapter("smbclient")
+            cmd = ls_adapter.build_command(target=target, share=share, recursive=True, command="ls", auth=auth)
+            result = self._smb_raw_run(cmd, timeout=90)
+            if not result:
+                typer.echo(f"  [-] Could not list share {share}")
+                continue
+
+            for entry in ls_adapter.parse_entries(result.stdout):
+                if entry.is_dir or entry.size > max_file_size:
+                    continue
+                scanned += 1
+                if not is_interesting(entry.name, entry.extention):
+                    continue
+
+                local_path = loot_root / share / entry.name.replace("\\", "/")
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+
+                get_adapter = self.create_adapter("smbclient")
+                get_cmd = get_adapter.build_command(
+                    target=target, share=share,
+                    command=f'get "{entry.name}" "{local_path}"',
+                    auth=auth,
+                )
+                get_result = self._smb_raw_run(get_cmd, timeout=60)
+                if not get_result or not local_path.exists():
+                    continue
+
+                downloaded += 1
+                matches = []
+                text = extract_text(local_path, entry.extention)
+                if text:
+                    matches = search_credentials(text)
+
+                findings.append({
+                    "share": share,
+                    "remote_path": entry.name,
+                    "local_path": str(local_path),
+                    "size": entry.size,
+                    "matches": matches,
+                })
+
+        if findings:
+            self.write_data(CanonicalDataModel(
+                "SMB-LOOT", target, "smbloot", datetime.now().isoformat(), findings
+            ))
+
+        hits = sum(1 for f in findings if f["matches"])
+        summary = (
+            f"Scanned {scanned} file(s), downloaded {downloaded} to {loot_root}, "
+            f"{hits} file(s) with credential-like content."
+        )
+        typer.echo(summary)
+        return summary
+
+    def diff_shares(self, target=None):
+        """
+        Vergleicht für alle hinterlegten User (settings), welche Shares sie sehen,
+        ob sie darauf zugreifen dürfen und welche Dateien sie darin sehen - um schnell
+        zu erkennen, ob ein (neuer) User andere Berechtigungen/Sichtbarkeiten hat.
+        """
+        if not self._check_adapter_exists("smbclient"):
+            typer.echo("smbclient adapter not available")
+            return
+
+        if not target:
+            target = typer.prompt("Enter target IP/hostname to compare share access for")
+
+        settings_list = self.db_reader.fetch_settings()
+        if len(settings_list) < 2:
+            typer.echo("Need at least 2 saved users (see 'settings add') to compare access.")
+            return
+
+        per_user = {}
+        for _, setting in settings_list:
+            label = f"{setting.domain}\\{setting.username}" if setting.domain else setting.username
+
+            list_adapter = self.create_adapter("smbclient")
+            cmd = list_adapter.build_command(
+                target=target, list_shares=True,
+                username=setting.username, password=setting.password, domain=setting.domain,
+            )
+            result = self._smb_raw_run(cmd, timeout=30)
+            share_entries = list_adapter.parse_share_entries(result.stdout) if result else []
+
+            share_access = {}
+            for s in share_entries:
+                if s.share_type != "Disk":
+                    continue
+
+                ls_adapter = self.create_adapter("smbclient")
+                ls_cmd = ls_adapter.build_command(
+                    target=target, share=s.name, command="ls",
+                    username=setting.username, password=setting.password, domain=setting.domain,
+                )
+                ls_result = self._smb_raw_run(ls_cmd, timeout=20)
+                stdout = ls_result.stdout if ls_result else ""
+                stderr = ls_result.stderr if ls_result else ""
+                combined = (stdout + stderr).upper()
+                denied = "ACCESS_DENIED" in combined or "NT_STATUS" in combined or "BAD_NETWORK_NAME" in combined
+
+                entries = ls_adapter.parse_entries(stdout) if (ls_result and not denied) else []
+                share_access[s.name] = {
+                    "access": "DENIED" if denied else ("OK" if ls_result else "ERROR"),
+                    "files": {e.name for e in entries},
+                }
+
+            per_user[label] = share_access
+
+        report = _format_share_diff(per_user)
+
+        serializable = [
+            {
+                "user": user,
+                "shares": {
+                    share: {"access": info["access"], "files": sorted(info["files"])}
+                    for share, info in shares.items()
+                },
+            }
+            for user, shares in per_user.items()
+        ]
+        self.write_data(CanonicalDataModel(
+            "SMB-DIFF", target, "diff_shares", datetime.now().isoformat(), serializable
+        ))
+
+        return report
 
     def _choose_database(self, db_files, db_dir):
         if db_files:

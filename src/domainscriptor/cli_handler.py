@@ -139,7 +139,8 @@ def start():
             "stopprocess": None,
             "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None},
             "settings": {"add": None, "delete": None},
-            "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None},
+            "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None,
+                          "hunt_creds": None, "diff_shares": None},
             "targets": None,
             "relayable": None,
             "ai": {"suggest": None, "analyze": None},
@@ -276,6 +277,12 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     elif field == "ldap_check":
         typer.echo("Checking ldap security")
         typer.echo(eng.check_ldap_security(proxy=proxy))
+    elif field == "hunt_creds":
+        typer.echo("Hunting for credential-bearing documents on SMB shares")
+        typer.echo(eng.hunt_smb_credentials())
+    elif field == "diff_shares":
+        typer.echo("Comparing share/file visibility across saved users")
+        typer.echo(eng.diff_shares())
     else:
         typer.echo("Entry ID is required")
 
