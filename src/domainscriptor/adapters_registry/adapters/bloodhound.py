@@ -31,7 +31,7 @@ class BloodhoundAdapter(Adapter):
     executable = "bloodhound-ce-python"
     help_List = {
         "domain": None,
-        "nameserver": None,
+        "dc": None,
         "collection_method": None,
         "output_dir": None,
         "zip": None,
@@ -46,8 +46,8 @@ class BloodhoundAdapter(Adapter):
     def build_command(
         self,
         domain: Optional[str] = None,
-        nameserver: Optional[str] = None,
-        collection_method: str = "All",
+        dc: Optional[str] = None,
+        collection_method: str = "All,LoggedOn",
         output_dir: Optional[str] = None,
         zip: bool = False,
         dns_tcp: bool = False,
@@ -66,6 +66,8 @@ class BloodhoundAdapter(Adapter):
                 "Zugangsdaten erforderlich (Settings via 'settings add'/'settings default')",
                 tool=self.executable,
             )
+        if not dc:
+            raise AdapterError("DC-IP erforderlich", tool=self.executable)
 
         out_dir = (
             Path(output_dir) if output_dir else Path("loot") / "bloodhound" / domain
@@ -88,8 +90,8 @@ class BloodhoundAdapter(Adapter):
             str(out_dir),
         ]
 
-        if nameserver:
-            cmd += ["-ns", nameserver]
+        if dc:
+            cmd += ["-dc", dc]
         if dns_tcp:
             cmd.append("--dns-tcp")
         if zip:
