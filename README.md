@@ -6,8 +6,27 @@
 
 ---
 
+## Unterstützte Tools
+
+Jedes Tool ist über einen eigenen Adapter angebunden und wird beim Start automatisch erkannt (fehlt das Binary, wird der Adapter deaktiviert, siehe `showadapters`).
+
+| Adapter-Name | Tool / Binary |
+|--------------|----------------|
+| `responder` | Responder |
+| `smbexec` | impacket-smbexec |
+| `smbclient` | smbclient |
+| `ntlmrelayx` | impacket-ntlmrelayx |
+| `nxc` | NetExec (nxc) |
+| `proxychains` | proxychains4 |
+| `nmap` | nmap |
+| `nslookup` | nslookup |
+| `bloodhound-ce` | bloodhound-ce-python |
+
+---
+
 ## Inhalt
 
+- [Unterstützte Tools](#unterstützte-tools)
 - [Installation](#installation)
 - [Konfiguration](#konfiguration)
   - [Tool-Konfiguration](#tool-konfiguration)
@@ -17,7 +36,6 @@
 - [Shortcuts](#shortcuts)
 - [KI-Assistent](#ki-assistent)
 - [Beispiele](#beispiele)
-- [Kompatibilität](#kompatibilität)
 
 ---
 
@@ -101,7 +119,7 @@ Alle Befehle werden innerhalb der interaktiven Shell (`domainscriptor start`) au
 | `stopprocess <name>` | Hintergrundprozess beenden |
 | `runcommand <adapter> [param=wert ...]` | Befehl über einen bestimmten Adapter ausführen |
 | `fetch [byIp\|byProtocol\|byToolname\|search] [wert]` | Daten aus der Datenbank abrufen |
-| `settings [add\|delete <id>]` | Zugangsdaten verwalten |
+| `settings [add\|delete <id>\|default <id>]` | Zugangsdaten verwalten |
 | `targets` | Konfigurierte Ziel-IPs anzeigen |
 | `relayable` | Relayable Hosts aus `smb_relayable.txt` anzeigen |
 | `shortcuts <shortcut> [proxy]` | Vordefinierte Befehlssequenzen ausführen |
@@ -127,7 +145,10 @@ Speichert Zugangsdaten für automatisierte Checks (Domain, User, Passwort).
 settings                     → aktuelle Einträge anzeigen
 settings add                 → neuen Eintrag hinzufügen
 settings delete <id>         → Eintrag löschen
+settings default <id>        → Eintrag als Default für automatisierte Checks setzen
 ```
+
+Gibt es mehrere Einträge, wird ohne explizites Setzen eines Defaults der erste Eintrag verwendet. Der aktive Default ist in der `settings`-Ausgabe mit `*` markiert.
 
 ---
 
@@ -141,6 +162,9 @@ Vordefinierte Befehlssequenzen für häufige Prüfungen.
 | `shortcuts get_dc` | Domaincontroller suchen → `dc_ips.txt` (via nxc oder nslookup-Fallback) |
 | `shortcuts smb_check [proxy]` | Vollständiger SMB-Sicherheitscheck (11 Prüfungen) |
 | `shortcuts ldap_check [proxy]` | Vollständiger LDAP-Sicherheitscheck (10 Prüfungen) |
+| `shortcuts hunt_creds` | SMB-Shares nach Credential-tragenden Dateien durchsuchen und herunterladen |
+| `shortcuts diff_shares` | Share-/Datei-Sichtbarkeit zwischen gespeicherten Usern vergleichen |
+| `shortcuts collect_ad` | AD-Daten via bloodhound-ce-python sammeln (Computer, User, Gruppen, GPOs, ...) |
 
 `smb_check` und `ldap_check` führen die Checks strukturiert mit Kopfzeilen aus:
 
@@ -217,20 +241,6 @@ shortcuts smb_check
 ai analyze
 ```
 
----
 
-## Kompatibilität
-
-Getestet auf **Kali Linux 2026.1** mit folgenden Tool-Versionen:
-
-| Tool | Version |
-|------|---------|
-| impacket-ntlmrelayx | v0.14.0.dev |
-| NetExec (nxc) | 1.5.1 |
-| Responder | 3.2.2.0 |
-| smbclient | 4.23.6 |
-| impacket-smbexec | v0.14.0.dev0 |
-
----
 
 *by Fabian Traxler*
