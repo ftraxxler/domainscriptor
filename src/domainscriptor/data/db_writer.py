@@ -23,7 +23,12 @@ class DeleteSetting:
     setting_id: str
 
 
-DBTasks = Union[InsertCanonical, UpsertSetting, DeleteSetting]
+@dataclass
+class SetDefaultSetting:
+    setting_id: str
+
+
+DBTasks = Union[InsertCanonical, UpsertSetting, DeleteSetting, SetDefaultSetting]
 
 
 class DBWriter(threading.Thread):
@@ -49,10 +54,19 @@ class DBWriter(threading.Thread):
         delete_setting = DeleteSetting(setting_id=setting_id)
         self.q.put(delete_setting)
 
+    def set_default_setting(self, setting_id):
+        set_default = SetDefaultSetting(setting_id=setting_id)
+        self.q.put(set_default)
+
     def init_database(self, settings):
         db = CanonicalDB(self.db_path)
         db.init_database()
         db.add_or_update_settings(settings)
+        db.close()
+
+    def migrate_database(self):
+        db = CanonicalDB(self.db_path)
+        db.migrate()
         db.close()
 
     def run(self):
@@ -73,6 +87,9 @@ class DBWriter(threading.Thread):
 
                     elif isinstance(task, DeleteSetting):
                         self.db.delete_setting(task.setting_id)
+
+                    elif isinstance(task, SetDefaultSetting):
+                        self.db.set_default_setting(task.setting_id)
 
                 finally:
                     self.q.task_done()

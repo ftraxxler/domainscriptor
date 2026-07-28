@@ -138,9 +138,9 @@ def start():
             "showprocesses": None,
             "stopprocess": None,
             "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None},
-            "settings": {"add": None, "delete": None},
+            "settings": {"add": None, "delete": None, "default": None},
             "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None,
-                          "hunt_creds": None, "diff_shares": None},
+                          "hunt_creds": None, "diff_shares": None, "collect_ad": None},
             "targets": None,
             "relayable": None,
             "ai": {"suggest": None, "analyze": None},
@@ -248,6 +248,12 @@ def settings(
             typer.echo("Entry ID is required")
     elif field == "add":
         typer.echo(eng.add_settings())
+    elif field == "default":
+        if setting_id:
+            eng.set_default_setting(setting_id)
+            typer.echo(f"Setting {setting_id} is now the default credential.")
+        else:
+            typer.echo("Entry ID is required")
     else:
         typer.echo("Invalid field")
 
@@ -283,6 +289,8 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     elif field == "diff_shares":
         typer.echo("Comparing share/file visibility across saved users")
         typer.echo(eng.diff_shares())
+    elif field == "collect_ad":
+        eng.collect_bloodhound()
     else:
         typer.echo("Entry ID is required")
 

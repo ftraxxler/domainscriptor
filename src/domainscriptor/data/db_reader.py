@@ -16,6 +16,7 @@ def _normalizer_settings_result(rows):
             domain=row[1],
             username=row[2],
             password=row[3],
+            is_default=bool(row[4]) if len(row) > 4 else False,
         )))
 
     return result

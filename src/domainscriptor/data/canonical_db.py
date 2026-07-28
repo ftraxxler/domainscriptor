@@ -19,6 +19,7 @@ class SettingsDataModel:
     domain: str
     username: str
     password: str
+    is_default: bool = False
 
 
 class CanonicalDB:
@@ -112,10 +113,11 @@ class CanonicalDB:
         cursor.execute("""
                        CREATE TABLE pentest_config
                        (
-                           id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                           domain   TEXT,
-                           username TEXT,
-                           password TEXT,
+                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                           domain     TEXT,
+                           username   TEXT,
+                           password   TEXT,
+                           is_default INTEGER NOT NULL DEFAULT 0,
                            UNIQUE (domain, username)
                        )
                        """)
@@ -123,6 +125,16 @@ class CanonicalDB:
 
     def init_database(self):
         self._create_table()
+
+    def migrate(self):
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA table_info(pentest_config)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "is_default" not in columns:
+            cursor.execute(
+                "ALTER TABLE pentest_config ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.commit()
 
     def add_or_update_settings(self, settings: List[SettingsDataModel]):
         if settings:
@@ -146,6 +158,13 @@ class CanonicalDB:
                           WHERE id = ?
                           """, (setting_id,))
         self.conn.commit()
+
+    def set_default_setting(self, setting_id: str):
+        with self.conn:
+            self.conn.execute("UPDATE pentest_config SET is_default = 0")
+            self.conn.execute(
+                "UPDATE pentest_config SET is_default = 1 WHERE id = ?", (setting_id,)
+            )
 
 
 

@@ -11,6 +11,7 @@ import typer
 from domainscriptor.Runner import Runner
 from domainscriptor.automations import *
 from domainscriptor.ai_client import get_ai_client
+from domainscriptor.adapters_registry.adapters.bloodhound import BloodhoundAdapter
 from domainscriptor.adapters_registry.adapters.ntlmrelayx import NTLMRelayAdapter
 from domainscriptor.adapters_registry.adapters.nmap import NmapAdapter
 from domainscriptor.adapters_registry.adapters.nslookup import NslookupAdapter
@@ -45,14 +46,15 @@ def _pretty_format_settings(settings: List[Tuple[str, SettingsDataModel]]):
     if not settings:
         return "No entries found."
 
-    headers = ["ID", "Domain", "User", "PW"]
+    headers = ["ID", "Domain", "User", "PW", "Default"]
     rows = []
     for setting_id, setting in settings:
         rows.append([
             str(setting_id),
             setting.domain,
             setting.username,
-            setting.password
+            setting.password,
+            "*" if setting.is_default else ""
         ])
 
     col_widths = []
@@ -156,6 +158,7 @@ class Engine:
         self.adapter_registry.register(ProxychainsAdapter)
         self.adapter_registry.register(NmapAdapter)
         self.adapter_registry.register(NslookupAdapter)
+        self.adapter_registry.register(BloodhoundAdapter)
 
     def init_database_connection(self, db_dir: str = "."):
         self.queue = Queue()
@@ -172,6 +175,8 @@ class Engine:
                 settings = self._init_setting()
             self.set_target()
             db_writer.init_database(settings)
+        else:
+            db_writer.migrate_database()
 
         db_writer.start()
         self.db_writer = db_writer
@@ -245,13 +250,18 @@ class Engine:
     def delete_setting(self, setting_id: str):
         self.db_writer.delete_setting(setting_id)
 
+    def set_default_setting(self, setting_id: str):
+        self.db_writer.set_default_setting(setting_id)
+
     def get_default_Credentials(self):
-        # TODO value default in DB
         setting_list = self.db_reader.fetch_settings()
-        settings=None
-        if setting_list:
-            idx, settings = setting_list[0]
-        return settings
+        if not setting_list:
+            return None
+        for _, settings in setting_list:
+            if settings.is_default:
+                return settings
+        # Kein Default gesetzt -> Fallback auf den ersten Eintrag
+        return setting_list[0][1]
 
     def run_task(self, adapter_name: str, return_output=False, **kwargs):
         try:
@@ -577,6 +587,49 @@ class Engine:
         ))
 
         return report
+
+    def collect_bloodhound(self, domain=None, nameserver=None, collection_method="All",
+                            zip=False, timeout=1800):
+        """
+        Sammelt AD-Daten (Computer, User, Gruppen, GPOs, ...) via BloodHound.py für
+        die spätere Analyse in BloodHound.
+        """
+        if not self._check_adapter_exists("bloodhound"):
+            typer.echo("bloodhound-python adapter not available")
+            return
+
+        if not self.get_default_Credentials():
+            typer.echo("No credentials configured. Use 'settings add' first.")
+            return
+
+        if not domain:
+            domain = typer.prompt("Enter AD domain (e.g. corp.local)")
+        if not nameserver:
+            nameserver = typer.prompt(
+                "Enter DNS server / DC IP for collection (leave empty to use system DNS)",
+                default="", show_default=False,
+            ) or None
+
+        typer.echo(f"Collecting AD data for domain {domain} (method={collection_method}) ...")
+        result = self.run_task(
+            "bloodhound", return_output=True,
+            domain=domain, nameserver=nameserver, collection_method=collection_method,
+            zip=zip, timeout=timeout,
+        )
+        if not result:
+            typer.echo("No data collected.")
+            return
+
+        entry = result[0].data[0]
+        collected = entry["collected"]
+        if not collected:
+            typer.echo(f"Collection finished, but no output files were found in {entry['output_dir']}.")
+            return
+
+        typer.echo(f"Collected data saved to {entry['output_dir']}:")
+        for label, info in collected.items():
+            typer.echo(f"  - {label}: {info['count']} ({info['file']})")
+        return entry
 
     def _choose_database(self, db_files, db_dir):
         if db_files:
