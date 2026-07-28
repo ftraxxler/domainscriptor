@@ -496,11 +496,13 @@ class Engine:
                 "SMB-LOOT", target, "smbloot", datetime.now().isoformat(), findings
             ))
 
-        hits = sum(1 for f in findings if f["matches"])
+        hits_findings = [f for f in findings if f["matches"]]
         summary = (
             f"Scanned {scanned} file(s), downloaded {downloaded} to {loot_root}, "
-            f"{hits} file(s) with credential-like content."
+            f"{len(hits_findings)} file(s) with credential-like content."
         )
+        if hits_findings:
+            summary += "\n" + "\n".join(f"  - {f['local_path']}" for f in hits_findings)
         typer.echo(summary)
         return summary
 

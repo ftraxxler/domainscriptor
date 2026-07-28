@@ -3,6 +3,7 @@
 smb_relayable.txt
 targets.txt
 dc.txt
+sample_creds/
 # Byte-compiled / optimized / DLL files
 
 __pycache__/
