@@ -22,7 +22,7 @@ class AdapterResult:
 
 class AdapterError(RuntimeError):
     def __init__(
-            self, message: str, *, tool: str | None = None, detail: str | None = None
+        self, message: str, *, tool: str | None = None, detail: str | None = None
     ):
         super().__init__(message)
         self.tool = tool
@@ -78,7 +78,6 @@ class Adapter(ABC):
         except (FileNotFoundError, subprocess.SubprocessError):
             raise RuntimeError(f"{cls.executable} can not be executed")
 
-
     @abstractmethod
     def build_command(self, **kwargs) -> List[str]:
         """
@@ -115,7 +114,7 @@ class Adapter(ABC):
             raise RuntimeError(f"Error running command")
 
     def help(self, timeout: int = 5):
-        
+
         try:
             result = subprocess.run(
                 [self.executable, *self.help_cmd],
@@ -135,14 +134,13 @@ class Adapter(ABC):
         except (FileNotFoundError, subprocess.SubprocessError):
             raise RuntimeError(f"Error running command")
 
-    def run(self, runner, queue, auth=None, timeout: int = 20, **kwargs):
+    def run(self, runner, queue, auth=None, timeout: int = default_timeout, **kwargs):
         try:
             cmd = self.build_command(auth=auth, **kwargs)
             typer.echo(f"Running command: {cmd}")
             if self.run_background:
                 runner.run_async(self.executable, cmd, self.watcher, queue)
             else:
-
                 result = subprocess.run(
                     [*cmd],
                     stdout=subprocess.PIPE,
