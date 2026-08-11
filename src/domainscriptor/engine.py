@@ -351,10 +351,22 @@ class Engine:
         typer.echo(f" {counter} {protocol} {name}  ({creds_tag})")
         typer.echo(bar)
 
-    def _print_check_summary(self, label: str, ip: str, total: int):
+    def _print_check_summary(self, label: str, target_label: str, total: int):
         typer.echo("\n" + "━" * 60)
-        typer.secho(f" {label} scan complete — {total} checks run against {ip}", fg=typer.colors.GREEN, bold=True)
+        typer.secho(f" {label} scan complete — {total} checks run against {target_label}", fg=typer.colors.GREEN, bold=True)
         typer.echo("━" * 60 + "\n")
+
+    def _resolve_target_kwarg(self, ip: str):
+        """
+        Wandelt die vom Nutzer angegebene IP in die passenden nxc-Zielparameter um.
+        'all' verwendet targets.txt (via nxc --targets_file) statt einer einzelnen IP.
+        """
+        if ip.strip().lower() == "all":
+            if not Path("targets.txt").exists():
+                typer.echo("targets.txt not found. Use 'targets set' first.")
+                return None, None
+            return {"targets_file": "targets.txt"}, "all targets (targets.txt)"
+        return {"target": ip}, ip
 
     def check_smb_security(self, ip=None, proxy=False):
         relay = None
@@ -363,14 +375,18 @@ class Engine:
         if not self._check_adapter_exists("nxc"):
             return
         if not ip:
-            ip = typer.prompt("Enter IP to check")
+            ip = typer.prompt("Enter IP to check (or 'all' for every target in targets.txt)")
+
+        target_kwarg, target_label = self._resolve_target_kwarg(ip)
+        if target_kwarg is None:
+            return
 
         commands = get_smb_security_commands()
         total = len(commands)
         for i, checks in enumerate(commands, start=1):
             self._print_check_header("SMB", i, total, checks["vuln"], checks["creds_required"])
             parameters = checks["parameters"].copy()
-            parameters["target"] = ip
+            parameters.update(target_kwarg)
             if proxy and relay and checks["creds_required"]:
                 parameters["proxy"] = str(proxy)
                 domain, username = relay.user.split("/")
@@ -381,7 +397,7 @@ class Engine:
                 parameters["password"] = ""
             self.run_task("nxc", **parameters)
 
-        self._print_check_summary("SMB", ip, total)
+        self._print_check_summary("SMB", target_label, total)
 
     def check_ldap_security(self, ip=None, proxy=False):
         relay = None
@@ -390,14 +406,18 @@ class Engine:
         if not self._check_adapter_exists("nxc"):
             return
         if not ip:
-            ip = typer.prompt("Enter IP to check")
+            ip = typer.prompt("Enter IP to check (or 'all' for every target in targets.txt)")
+
+        target_kwarg, target_label = self._resolve_target_kwarg(ip)
+        if target_kwarg is None:
+            return
 
         commands = get_ldap_security_commands()
         total = len(commands)
         for i, checks in enumerate(commands, start=1):
             self._print_check_header("LDAP", i, total, checks["vuln"], checks["creds_required"])
             parameters = checks["parameters"].copy()
-            parameters["target"] = ip
+            parameters.update(target_kwarg)
             if proxy and relay and checks["creds_required"]:
                 parameters["proxy"] = str(proxy)
                 domain, username = relay.user.split("/")
@@ -408,7 +428,7 @@ class Engine:
                 parameters["password"] = ""
             self.run_task("nxc", **parameters)
 
-        self._print_check_summary("LDAP", ip, total)
+        self._print_check_summary("LDAP", target_label, total)
 
     def _smb_raw_run(self, cmd, timeout=20):
         try:

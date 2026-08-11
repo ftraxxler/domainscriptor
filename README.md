@@ -160,8 +160,8 @@ Vordefinierte Befehlssequenzen für häufige Prüfungen.
 |----------|-------------|
 | `shortcuts get_relayable` | Welche Hosts sind SMB-relayable? → `smb_relayable.txt` |
 | `shortcuts get_dc` | Domaincontroller suchen → `dc_ips.txt` (via nxc oder nslookup-Fallback) |
-| `shortcuts smb_check [proxy]` | Vollständiger SMB-Sicherheitscheck (11 Prüfungen) |
-| `shortcuts ldap_check [proxy]` | Vollständiger LDAP-Sicherheitscheck (10 Prüfungen) |
+| `shortcuts smb_check [proxy]` | Vollständiger SMB-Sicherheitscheck (11 Prüfungen). Bei der IP-Abfrage kann auch `all` eingegeben werden, um gegen alle Ziele in `targets.txt` zu testen |
+| `shortcuts ldap_check [proxy]` | Vollständiger LDAP-Sicherheitscheck (10 Prüfungen). Bei der IP-Abfrage kann auch `all` eingegeben werden, um gegen alle Ziele in `targets.txt` zu testen |
 | `shortcuts hunt_creds` | SMB-Shares nach Credential-tragenden Dateien durchsuchen und herunterladen |
 | `shortcuts diff_shares` | Share-/Datei-Sichtbarkeit zwischen gespeicherten Usern vergleichen |
 | `shortcuts collect_ad` | AD-Daten via bloodhound-ce-python sammeln (Computer, User, Gruppen, GPOs, ...) |
