@@ -350,17 +350,7 @@ class Engine:
     def get_dcs(self):
         ips = []
 
-        if self._check_adapter_exists("nxc") and self.get_default_Credentials():
-            ip = typer.prompt("Enter IP for DC check")
-            result = self.run_task("nxc", return_output=True,
-                                   **{'protocol': 'ldap', 'target': ip, 'extra_args': '--dc-list'})
-            result = result[0]
-            for entry in result.data:
-                for found_ip in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", entry["message"]):
-                    if found_ip not in ips:
-                        ips.append(found_ip)
-
-        elif self._check_adapter_exists("nslookup"):
+        if self._check_adapter_exists("nslookup"):
             domain = typer.prompt("Enter domain for DC lookup (e.g. corp.local)")
             result = self.run_task("nslookup", return_output=True, **{'domain': domain})
             if result:
@@ -369,6 +359,16 @@ class Engine:
                         candidate = item.get("ip") or item.get("hostname", "")
                         if candidate and candidate not in ips:
                             ips.append(candidate)
+
+        elif self._check_adapter_exists("nxc") and self.get_default_Credentials():
+            ip = typer.prompt("Enter IP for DC check")
+            result = self.run_task("nxc", return_output=True,
+                                   **{'protocol': 'ldap', 'target': ip, 'extra_args': '--dc-list'})
+            result = result[0]
+            for entry in result.data:
+                for found_ip in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", entry["message"]):
+                    if found_ip not in ips:
+                        ips.append(found_ip)
 
         else:
             typer.echo("Neither nxc (with credentials) nor nslookup is available.")
@@ -387,6 +387,10 @@ class Engine:
             relayable_file = str(self._p("relayable_file"))
             self.run_task("nxc", **{'targets_file': targets_file,
                                     'extra_args': f'--gen-relay-list {relayable_file}'})
+            if not Path(relayable_file).exists():
+                return ("No relayable hosts found (nxc produced no relay list). "
+                        "This usually means authentication failed or no targets "
+                        "had SMB signing disabled.")
             result = _return_file_content(relayable_file)
             return f"SMB-Relayable:\n{result}"
 
