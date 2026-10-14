@@ -7,9 +7,6 @@ from typing import Any, Dict, List, Optional
 
 import typer
 
-from domainscriptor import Runner
-from domainscriptor.data.db_writer import InsertCanonical
-
 
 @dataclass
 class AdapterResult:
@@ -135,25 +132,34 @@ class Adapter(ABC):
             raise RuntimeError(f"Error running command")
 
     def run(self, runner, queue, auth=None, timeout: int = default_timeout, **kwargs):
+        # build_command kann AdapterError (RuntimeError) werfen – diese Meldung ist
+        # bewusst aussagekräftig und wird nicht in eine generische Meldung übersetzt.
+        cmd = self.build_command(auth=auth, **kwargs)
         try:
-            cmd = self.build_command(auth=auth, **kwargs)
             typer.echo(f"Running command: {cmd}")
             if self.run_background:
                 runner.run_async(self.executable, cmd, self.watcher, queue)
-            else:
-                result = subprocess.run(
-                    [*cmd],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=timeout,
-                    text=True,
+                return None
+
+            result = subprocess.run(
+                [*cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                text=True,
+            )
+            if result.returncode not in (0, 1) and result.stderr.strip():
+                # Nicht abbrechen (viele Tools liefern !=0 bei Findings), aber warnen.
+                typer.secho(
+                    f"[{self.executable}] exit {result.returncode}: {result.stderr.strip().splitlines()[-1]}",
+                    fg=typer.colors.YELLOW,
                 )
-                # print(f"Logging Result {result}")
-                output = self.parse_output(result.stdout)
-                return output
+            return self.parse_output(result.stdout)
         except (TimeoutError, subprocess.TimeoutExpired):
-            raise RuntimeError("Running command timed out")
-        except (FileNotFoundError, subprocess.SubprocessError):
-            raise RuntimeError(f"Error running command")
+            raise RuntimeError(f"'{self.executable}' timed out after {timeout}s")
+        except FileNotFoundError:
+            raise RuntimeError(f"'{self.executable}' not found (is it installed and on PATH?)")
+        except subprocess.SubprocessError as e:
+            raise RuntimeError(f"Error running '{self.executable}': {e}")
         except NotImplementedError as e:
             typer.echo(typer.style(str(e), fg=typer.colors.RED, bold=True))

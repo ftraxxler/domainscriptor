@@ -20,12 +20,29 @@ from domainscriptor.adapters_registry.adapters.proxychains import ProxychainsAda
 from domainscriptor.adapters_registry.adapters.responder import ResponderAdapter
 from domainscriptor.adapters_registry.adapters.smbexec import SMBExecAdapter
 from domainscriptor.adapters_registry.adapters.smbclient import SMBClientAdapter
+from domainscriptor.adapters_registry.adapters.kerbrute import KerbruteAdapter
+from domainscriptor.adapters_registry.adapters.secretsdump import SecretsdumpAdapter
 from domainscriptor.adapters_registry.abstract_adapter import Adapter
 from domainscriptor.adapters_registry.registry import Adapter_Registry
+from domainscriptor.config import get_config
+from domainscriptor import report as report_mod
 from domainscriptor.data.canonical_db import CanonicalDataModel, SettingsDataModel
 from domainscriptor.data.db_reader import DBReader
 from domainscriptor.data.db_writer import DBWriter
 from domainscriptor.smb_loot import is_interesting, extract_text, search_credentials
+
+# IP / CIDR / Hostname – verhindert u. a. Argument-Injection über führende '-'
+_TARGET_RE = re.compile(
+    r"^(?:"
+    r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?"            # IPv4 / CIDR
+    r"|(?:\d{1,3}\.){3}\d{1,3}-(?:\d{1,3}\.){3}\d{1,3}"  # IPv4-Range a.b.c.d-e.f.g.h
+    r"|[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?"     # Hostname/FQDN
+    r")$"
+)
+
+
+def _is_valid_target(target: str) -> bool:
+    return bool(_TARGET_RE.match(target.strip()))
 
 
 def _return_file_content(name, max_lines=15):
@@ -85,6 +102,38 @@ def _pretty_format_settings(settings: List[Tuple[str, SettingsDataModel]]):
     return table
 
 
+def _ascii_table(headers: List[str], rows: List[List[str]], empty_msg: str) -> str:
+    if not rows:
+        return empty_msg
+    rows = [[("" if c is None else str(c)) for c in row] for row in rows]
+    widths = [max(len(headers[i]), max(len(r[i]) for r in rows)) for i in range(len(headers))]
+    head = " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers)))
+    sep = "-+-".join("-" * w for w in widths)
+    body = [" | ".join(r[i].ljust(widths[i]) for i in range(len(headers))) for r in rows]
+    return "\n".join([head, sep] + body)
+
+
+def _format_hosts(hosts: List[dict]) -> str:
+    rows = [[h["identifier"], h.get("ip"), h.get("hostname"), h.get("os"),
+             h.get("domain"), (h.get("last_seen") or "")[:19]] for h in hosts]
+    return _ascii_table(["HOST", "IP", "HOSTNAME", "OS", "DOMAIN", "LAST SEEN"],
+                        rows, "No hosts recorded yet.")
+
+
+def _format_findings(findings: List[dict]) -> str:
+    rows = [[f["severity"].upper(), f["category"], f["host"], f["tool"], f["title"]]
+            for f in findings]
+    return _ascii_table(["SEVERITY", "CATEGORY", "HOST", "TOOL", "TITLE"],
+                        rows, "No findings recorded yet.")
+
+
+def _format_credentials(creds: List[dict]) -> str:
+    rows = [[c.get("domain"), c["username"], c["secret_type"], c["secret_value"],
+             c.get("source_tool"), "yes" if c.get("valid") else "no"] for c in creds]
+    return _ascii_table(["DOMAIN", "USERNAME", "TYPE", "SECRET", "SOURCE", "VALID"],
+                        rows, "No credentials recorded yet.")
+
+
 def _format_share_diff(per_user: dict) -> str:
     if not per_user:
         return "No data collected."
@@ -142,12 +191,17 @@ def _format_share_diff(per_user: dict) -> str:
 class Engine:
     def __init__(self, argument_handler):
         self.argument_handler = argument_handler
+        self.config = get_config()
         self.adapter_registry: Adapter_Registry = Adapter_Registry()
         self.runner = Runner()
         self.queue = None
         self.db_writer: DBWriter = None
         self.db_reader: DBReader = None
         self.load_adapters()
+
+    def _p(self, name: str) -> Path:
+        """Konfigurierter Ausgabepfad (relativ zum work_dir)."""
+        return self.config.path(name)
 
     def load_adapters(self):
         self.adapter_registry.register(ResponderAdapter)
@@ -159,10 +213,12 @@ class Engine:
         self.adapter_registry.register(NmapAdapter)
         self.adapter_registry.register(NslookupAdapter)
         self.adapter_registry.register(BloodhoundAdapter)
+        self.adapter_registry.register(KerbruteAdapter)
+        self.adapter_registry.register(SecretsdumpAdapter)
 
-    def init_database_connection(self, db_dir: str = "."):
+    def init_database_connection(self, db_dir: str = None):
         self.queue = Queue()
-        db_dir = Path(db_dir)
+        db_dir = Path(db_dir) if db_dir else Path(self.config.paths.db_dir)
         db_dir.mkdir(parents=True, exist_ok=True)
 
         db_files = list(db_dir.glob("*.db"))
@@ -237,6 +293,17 @@ class Engine:
     def search_data(self, search):
         return self.db_reader.search_in_data(search)
 
+    # ── Strukturierte Abfragen ──────────────────────────────────────────────
+
+    def get_hosts_report(self):
+        return _format_hosts(self.db_reader.get_hosts())
+
+    def get_findings_report(self, severity: str = "", category: str = "", host: str = ""):
+        return _format_findings(self.db_reader.get_findings(severity, category, host))
+
+    def get_credentials_report(self):
+        return _format_credentials(self.db_reader.get_credentials())
+
     def get_settings(self):
         return _pretty_format_settings(self.db_reader.fetch_settings())
 
@@ -308,22 +375,26 @@ class Engine:
             return
 
         typer.echo(f"Found DCs: {ips}")
-        with open("dc_ips.txt", "w", encoding="utf-8") as f:
+        dc_path = self._p("dc_file")
+        with open(dc_path, "w", encoding="utf-8") as f:
             for found_ip in ips:
                 f.write(found_ip + "\n")
-        typer.echo("Saved to dc_ips.txt")
+        typer.echo(f"Saved to {dc_path}")
 
     def get_relayable(self):
         if self._check_adapter_exists("nxc"):
-            self.run_task("nxc", **{'targets_file': 'targets.txt', 'extra_args': '--gen-relay-list smb_relayable.txt'})
-            result = _return_file_content("smb_relayable.txt")
+            targets_file = str(self._p("targets_file"))
+            relayable_file = str(self._p("relayable_file"))
+            self.run_task("nxc", **{'targets_file': targets_file,
+                                    'extra_args': f'--gen-relay-list {relayable_file}'})
+            result = _return_file_content(relayable_file)
             return f"SMB-Relayable:\n{result}"
 
         return "Adapter does not exist"
 
     def get_targets(self):
         try:
-            with open("targets.txt") as f:
+            with open(self._p("targets_file")) as f:
                 typer.echo(f"TARGETS:")
                 for line in f:
                     typer.echo(line.strip())
@@ -333,7 +404,7 @@ class Engine:
 
     def show_relayable(self):
         try:
-            with open("smb_relayable.txt") as f:
+            with open(self._p("relayable_file")) as f:
                 typer.echo(f"SMB Relayable Targets:")
                 for line in f:
                     typer.echo(line.strip())
@@ -362,10 +433,11 @@ class Engine:
         'all' verwendet targets.txt (via nxc --targets_file) statt einer einzelnen IP.
         """
         if ip.strip().lower() == "all":
-            if not Path("targets.txt").exists():
-                typer.echo("targets.txt not found. Use 'targets set' first.")
+            targets_file = self._p("targets_file")
+            if not targets_file.exists():
+                typer.echo(f"{targets_file} not found. Use 'targets set' first.")
                 return None, None
-            return {"targets_file": "targets.txt"}, "all targets (targets.txt)"
+            return {"targets_file": str(targets_file)}, f"all targets ({targets_file.name})"
         return {"target": ip}, ip
 
     def check_smb_security(self, ip=None, proxy=False):
@@ -474,7 +546,7 @@ class Engine:
 
         typer.echo(f"Scanning shares on {target}: {shares}")
 
-        loot_root = Path("loot") / target
+        loot_root = self._p("loot_dir") / target
         findings = []
         scanned = 0
         downloaded = 0
@@ -608,14 +680,14 @@ class Engine:
 
         return report
 
-    def collect_bloodhound(self, domain=None, nameserver=None, collection_method="All",
+    def collect_bloodhound(self, domain=None, dc=None, collection_method="All,LoggedOn",
                             zip=False, timeout=1800):
         """
         Sammelt AD-Daten (Computer, User, Gruppen, GPOs, ...) via BloodHound.py für
         die spätere Analyse in BloodHound.
         """
-        if not self._check_adapter_exists("bloodhound"):
-            typer.echo("bloodhound-python adapter not available")
+        if not self._check_adapter_exists("bloodhound-ce"):
+            typer.echo("bloodhound-ce-python adapter not available")
             return
 
         if not self.get_default_Credentials():
@@ -624,16 +696,13 @@ class Engine:
 
         if not domain:
             domain = typer.prompt("Enter AD domain (e.g. corp.local)")
-        if not nameserver:
-            nameserver = typer.prompt(
-                "Enter DNS server / DC IP for collection (leave empty to use system DNS)",
-                default="", show_default=False,
-            ) or None
+        if not dc:
+            dc = typer.prompt("Enter DC IP for collection (e.g. 10.0.0.1)")
 
         typer.echo(f"Collecting AD data for domain {domain} (method={collection_method}) ...")
         result = self.run_task(
-            "bloodhound", return_output=True,
-            domain=domain, nameserver=nameserver, collection_method=collection_method,
+            "bloodhound-ce", return_output=True,
+            domain=domain, dc=dc, collection_method=collection_method,
             zip=zip, timeout=timeout,
         )
         if not result:
@@ -696,17 +765,82 @@ class Engine:
     def set_target(self):
         typer.echo("Set the target IP ranges Format X.X.X.X(/Y) (separate by ,)")
         targets = typer.prompt("Targets")
-        targets = targets.split(",")
-        with open("targets.txt", "w") as f:
-            for target in targets:
-                f.write(target.strip() + "\n")
+        valid, invalid = [], []
+        for raw in targets.split(","):
+            t = raw.strip()
+            if not t:
+                continue
+            (valid if _is_valid_target(t) else invalid).append(t)
+
+        if invalid:
+            typer.secho(
+                f"Ignored invalid target(s): {', '.join(invalid)} "
+                "(only IPv4/CIDR/range/hostname allowed)",
+                fg=typer.colors.YELLOW,
+            )
+        if not valid:
+            typer.secho("No valid targets provided.", fg=typer.colors.RED)
+            return
+
+        targets_path = self._p("targets_file")
+        targets_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(targets_path, "w") as f:
+            for target in valid:
+                f.write(target + "\n")
+        typer.echo(f"Saved {len(valid)} target(s) to {targets_path}")
 
     def _check_adapter_exists(self, adapter_name):
         return adapter_name in self.adapter_registry.list_names()
 
+    # ── Report-Export ───────────────────────────────────────────────────────
+
+    def export_report(self, fmt: str = "markdown", output: str = None,
+                      include_ai: bool = False) -> str:
+        fmt = (fmt or "markdown").lower()
+        if fmt not in report_mod.FORMATS:
+            return f"Unknown format '{fmt}'. Valid options: {', '.join(report_mod.FORMATS)}"
+
+        findings = self.db_reader.fetch_all_raw()
+        if not findings:
+            return "No findings in the database yet. Run some commands first."
+
+        ai_analysis = None
+        if include_ai:
+            try:
+                ai_analysis = self.ai_analyze()
+            except RuntimeError as e:
+                typer.secho(f"AI analysis skipped: {e}", fg=typer.colors.YELLOW)
+
+        structured = {
+            "hosts": self.db_reader.get_hosts(),
+            "findings": self.db_reader.get_findings(),
+            "credentials": self.db_reader.get_credentials(),
+        }
+
+        out_dir = self._p("report_dir")
+        path = report_mod.write_report(
+            fmt, findings, out_dir, output=output, ai_analysis=ai_analysis,
+            structured=structured,
+        )
+        return f"Report ({fmt}, {len(findings)} findings) written to {path}"
+
+    # ── Config ────────────────────────────────────────────────────────────────
+
+    def show_config(self) -> str:
+        import json as _json
+        from domainscriptor.config import find_config_path
+        src = find_config_path()
+        header = f"Config source: {src if src else '(defaults, no file found)'}"
+        return header + "\n" + _json.dumps(self.config.as_dict(), indent=2)
+
     # ── Web UI ────────────────────────────────────────────────────────────────
 
-    def start_webui(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+    def start_webui(self, host: str = None, port: int = None) -> None:
+        if not self.config.web.enabled:
+            typer.secho("Web UI disabled via config.", fg=typer.colors.YELLOW)
+            return
+        host = host or self.config.web.host
+        port = port or self.config.web.port
         from domainscriptor.web import start_in_thread
         start_in_thread(self.db_reader, host=host, port=port)
         typer.secho(f"Web UI: http://{host}:{port}", fg=typer.colors.CYAN)
@@ -715,9 +849,27 @@ class Engine:
 
     def _build_ai_client(self):
         try:
-            return get_ai_client()
+            return get_ai_client(
+                provider=self.config.ai.provider or None,
+                model=self.config.ai.model or None,
+            )
         except EnvironmentError as e:
             raise RuntimeError(str(e))
+
+    def _structured_summary(self, limit: int = 40) -> str:
+        """Kompakte, priorisierte Zusammenfassung der strukturierten Findings für KI-Prompts."""
+        findings = self.db_reader.get_findings()[:limit]
+        creds = self.db_reader.get_credentials()
+        if not findings and not creds:
+            return ""
+        lines = ["Prioritized findings (severity | category | host | tool | title):"]
+        for f in findings:
+            lines.append(f"  - {f['severity'].upper()} | {f['category']} | "
+                         f"{f['host']} | {f['tool']} | {f['title']}")
+        if creds:
+            lines.append(f"Recovered credentials: {len(creds)} "
+                         f"({', '.join(sorted({c['secret_type'] for c in creds}))})")
+        return "\n".join(lines)
 
     def ai_suggest(self) -> str:
         client = self._build_ai_client()
@@ -733,10 +885,12 @@ class Engine:
             "Format each suggestion as a ready-to-paste command with a one-line explanation. "
             "Only use adapters that are listed as available. Be concise and actionable."
         )
+        summary = self._structured_summary()
         user = (
             f"Available adapters: {adapters}\n"
             f"Target domain: {domain}\n\n"
-            f"Collected findings so far:\n{findings if findings else '(none yet)'}"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Collected findings so far:\n{findings if findings else '(none yet)'}"
         )
         return client.chat(system, user)
 
@@ -754,7 +908,8 @@ class Engine:
             "3) recommended remediation steps. "
             "Structure your response with clear headings. Be specific about IPs and protocols where relevant."
         )
-        user = f"Pentest findings:\n\n{findings}"
+        summary = self._structured_summary()
+        user = (f"{summary}\n\n" if summary else "") + f"Raw pentest findings:\n\n{findings}"
         return client.chat(system, user)
 
     def _get_available_relays(self):

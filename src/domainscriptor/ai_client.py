@@ -113,11 +113,11 @@ _PROVIDERS = {
 }
 
 
-def get_ai_client() -> AIClient:
-    provider = os.environ.get("AI_PROVIDER", "openrouter").lower()
+def get_ai_client(provider: Optional[str] = None, model: Optional[str] = None) -> AIClient:
+    provider = (provider or os.environ.get("AI_PROVIDER", "openrouter")).lower()
     client_cls = _PROVIDERS.get(provider)
     if not client_cls:
         raise EnvironmentError(
             f"Unknown AI_PROVIDER '{provider}'. Valid options: {', '.join(_PROVIDERS)}"
         )
-    return client_cls()
+    return client_cls(model=model or None)

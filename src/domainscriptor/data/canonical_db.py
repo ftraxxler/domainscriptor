@@ -2,7 +2,7 @@ from datetime import datetime
 import sqlite3
 import json
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -121,7 +121,54 @@ class CanonicalDB:
                            UNIQUE (domain, username)
                        )
                        """)
+        self._create_structured_tables(cursor)
         self.conn.commit()
+
+    def _create_structured_tables(self, cursor):
+        """Normalisierte Entitäten (additiv zum rohen canonical_data-Log)."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hosts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifier TEXT NOT NULL UNIQUE,
+                ip         TEXT,
+                hostname   TEXT,
+                os         TEXT,
+                domain     TEXT,
+                first_seen TEXT,
+                last_seen  TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS findings (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                host_id    INTEGER REFERENCES hosts(id),
+                category   TEXT,
+                title      TEXT,
+                severity   TEXT,
+                protocol   TEXT,
+                tool       TEXT,
+                evidence   TEXT,
+                created_at TEXT,
+                UNIQUE (host_id, tool, protocol, title)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS credentials (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                host_id     INTEGER REFERENCES hosts(id),
+                domain      TEXT,
+                username    TEXT,
+                secret_type TEXT,
+                secret_value TEXT,
+                source_tool TEXT,
+                valid       INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT,
+                last_seen   TEXT,
+                UNIQUE (domain, username, secret_type, secret_value)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_sev ON findings(severity)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_cat ON findings(category)")
 
     def init_database(self):
         self._create_table()
@@ -134,7 +181,69 @@ class CanonicalDB:
             cursor.execute(
                 "ALTER TABLE pentest_config ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
             )
-            self.conn.commit()
+        # Strukturierte Tabellen für bestehende Datenbanken nachrüsten.
+        self._create_structured_tables(cursor)
+        self.conn.commit()
+
+    # ── Strukturierte Entitäten ────────────────────────────────────────────
+
+    def upsert_host(self, host) -> int:
+        now = datetime.now().isoformat()
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO hosts (identifier, ip, hostname, os, domain, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(identifier) DO UPDATE SET
+                    ip        = COALESCE(excluded.ip, hosts.ip),
+                    hostname  = COALESCE(excluded.hostname, hosts.hostname),
+                    os        = COALESCE(excluded.os, hosts.os),
+                    domain    = COALESCE(excluded.domain, hosts.domain),
+                    last_seen = excluded.last_seen
+            """, (host.identifier, host.ip, host.hostname, host.os, host.domain, now, now))
+            row = self.conn.execute(
+                "SELECT id FROM hosts WHERE identifier = ?", (host.identifier,)
+            ).fetchone()
+        return row[0]
+
+    def insert_finding(self, finding, host_id: int):
+        now = datetime.now().isoformat()
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO findings
+                    (host_id, category, title, severity, protocol, tool, evidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(host_id, tool, protocol, title) DO UPDATE SET
+                    severity   = excluded.severity,
+                    evidence   = excluded.evidence,
+                    created_at = excluded.created_at
+            """, (
+                host_id, finding.category.value, finding.title, finding.severity.value,
+                finding.protocol, finding.tool, json.dumps(finding.evidence), now,
+            ))
+
+    def insert_credential(self, cred, host_id: Optional[int]):
+        now = datetime.now().isoformat()
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO credentials
+                    (host_id, domain, username, secret_type, secret_value, source_tool,
+                     valid, created_at, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(domain, username, secret_type, secret_value) DO UPDATE SET
+                    valid       = excluded.valid,
+                    source_tool = excluded.source_tool,
+                    last_seen   = excluded.last_seen
+            """, (
+                host_id, cred.domain, cred.username, cred.secret_type.value,
+                cred.secret_value, cred.source_tool, 1 if cred.valid else 0, now, now,
+            ))
+
+    def insert_structured(self, host, findings, credentials):
+        host_id = self.upsert_host(host)
+        for f in findings:
+            self.insert_finding(f, host_id)
+        for c in credentials:
+            self.insert_credential(c, host_id)
 
     def add_or_update_settings(self, settings: List[SettingsDataModel]):
         if settings:

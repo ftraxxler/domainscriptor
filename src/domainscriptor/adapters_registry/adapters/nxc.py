@@ -136,8 +136,11 @@ class NXCAdapter(Adapter):
         if local_auth:
             cmd.append("--local-auth")
 
+        # NetExec belegt '-p' mit dem Passwort und besitzt keinen generischen
+        # Port-Schalter; ein benutzerdefinierter Port wird (protokollabhängig)
+        # über extra_args="--port <n>" gesetzt, um die Kollision zu vermeiden.
         if port is not None:
-            cmd += ["-p", str(port)]
+            cmd += ["--port", str(port)]
 
         if command:
             cmd += ["-x", command]

@@ -137,13 +137,16 @@ def start():
             "showadapters": None,
             "showprocesses": None,
             "stopprocess": None,
-            "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None},
+            "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None,
+                      "hosts": None, "findings": None, "creds": None},
             "settings": {"add": None, "delete": None, "default": None},
             "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None,
                           "hunt_creds": None, "diff_shares": None, "collect_ad": None},
             "targets": None,
             "relayable": None,
             "ai": {"suggest": None, "analyze": None},
+            "report": {"markdown": None, "html": None, "json": None},
+            "config": {"show": None, "init": None},
         }
     base_completer = NestedCompleter.from_nested_dict(commands)
     runcommand_completer = RuncommandCompleter(adapter_helps)
@@ -184,8 +187,8 @@ def start():
             except click.exceptions.UsageError as exc:
                 typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
             except Exception as exc:
-                typer.secho(f"Unknow Error happen", fg=typer.colors.RED)
-                typer.secho(f"{traceback.print_exc()}", fg=typer.colors.RED)
+                typer.secho(f"Unexpected error: {exc}", fg=typer.colors.RED)
+                traceback.print_exc()
 
 
 @argument_handler.command(context_settings={"allow_extra_args": True})
@@ -208,6 +211,13 @@ def fetch(ctx: typer.Context,
     eng: Engine = ctx.obj
     if field is None:
         typer.echo(eng.read_data())
+    elif field == "hosts":
+        typer.echo(eng.get_hosts_report())
+    elif field == "findings":
+        # optionaler value = Severity-Filter (info|low|medium|high|critical)
+        typer.echo(eng.get_findings_report(severity=value or ""))
+    elif field == "creds":
+        typer.echo(eng.get_credentials_report())
     elif value:
         if field == "byIp":
             typer.echo(eng.read_data_ip(value))
@@ -217,6 +227,8 @@ def fetch(ctx: typer.Context,
             typer.echo(eng.read_data_tool(value))
         elif field == "search":
             typer.echo(eng.search_data(value))
+        else:
+            typer.echo("Invalid field or value not specified")
     else:
         typer.echo("Invalid field or value not specified")
 
@@ -226,11 +238,11 @@ def settings(
         ctx: typer.Context,
         field: Optional[str] = typer.Argument(
             None,
-            help="delete"
+            help="add | delete | default (omit to list)"
         ),
         setting_id: Optional[str] = typer.Argument(
             None,
-            help="Value for the field"
+            help="Setting ID (for delete/default)"
         ),
 ):
     """
@@ -261,10 +273,10 @@ def settings(
 @argument_handler.command(context_settings={"allow_extra_args": True})
 def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     ...,
-    help="delete"),
+    help="get_dc | get_relayable | smb_check | ldap_check | hunt_creds | diff_shares | collect_ad"),
               proxy: Optional[str] = typer.Argument(
                   False,
-                  help="Value for the field"
+                  help="Set to use a relay/proxychains for authenticated checks"
               )):
     """
     Run shortcuts to simplify complex commands and run multiple commands at once
@@ -298,7 +310,7 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
 @argument_handler.command()
 def targets(ctx: typer.Context, parameter: Optional[str] = typer.Argument(
     None,
-    help="delete"
+    help="'set' to (re)define targets (omit to list)"
 ), ):
     """
     Prints out the set targets
@@ -317,6 +329,47 @@ def relayable(ctx: typer.Context):
     """
     eng: Engine = ctx.obj
     eng.show_relayable()
+
+
+@argument_handler.command(context_settings={"allow_extra_args": True})
+def report(
+    ctx: typer.Context,
+    fmt: str = typer.Argument("markdown", help="markdown | html | json"),
+    output: Optional[str] = typer.Argument(None, help="Optional output file path"),
+    ai: bool = typer.Option(False, "--ai", help="Include AI analysis in the report"),
+):
+    """
+    Export collected findings as a report (markdown | html | json).
+    """
+    eng: Engine = ctx.obj
+    typer.echo(eng.export_report(fmt=fmt, output=output, include_ai=ai))
+
+
+@argument_handler.command()
+def config(
+    ctx: typer.Context,
+    action: str = typer.Argument("show", help="show | init"),
+    path: Optional[str] = typer.Argument(None, help="Target path for 'init'"),
+):
+    """
+    Show the effective configuration or write a sample config file ('init').
+    """
+    from domainscriptor.config import write_sample_config, get_config
+    if action == "init":
+        target = path or "domainscriptor.toml"
+        written = write_sample_config(target)
+        typer.secho(f"Sample config written to {written}", fg=typer.colors.GREEN)
+        typer.echo("Edit it and restart Domainscriptor, or set DOMAINSCRIPTOR_CONFIG.")
+    elif action == "show":
+        eng: Engine = ctx.obj
+        if eng is not None:
+            typer.echo(eng.show_config())
+        else:
+            # Außerhalb der Shell (ohne Engine-Objekt): Config direkt laden.
+            import json as _json
+            typer.echo(_json.dumps(get_config().as_dict(), indent=2))
+    else:
+        typer.secho(f"Unknown action '{action}'. Use 'show' or 'init'.", fg=typer.colors.RED)
 
 
 @argument_handler.command()

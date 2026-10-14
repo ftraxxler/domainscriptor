@@ -2,7 +2,10 @@
 *.db
 smb_relayable.txt
 targets.txt
-dc.txt
+dc_ips.txt
+loot/
+reports/
+domainscriptor.toml
 sample_creds/
 # Byte-compiled / optimized / DLL files
 

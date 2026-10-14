@@ -6,6 +6,7 @@ from typing import List, Union
 import typer
 
 from domainscriptor.data.canonical_db import CanonicalDB, CanonicalDataModel, SettingsDataModel
+from domainscriptor.data.structured_mapper import map_canonical
 
 
 @dataclass
@@ -69,6 +70,20 @@ class DBWriter(threading.Thread):
         db.migrate()
         db.close()
 
+    def _populate_structured(self, obj):
+        """Leitet aus dem/den CanonicalDataModel(en) die normalisierten Entitäten ab.
+        Fehler hier dürfen den Roh-Insert nicht gefährden."""
+        items = obj if isinstance(obj, list) else [obj]
+        for cdm in items:
+            if not isinstance(cdm, CanonicalDataModel):
+                continue
+            try:
+                host, findings, creds = map_canonical(cdm)
+                self.db.insert_structured(host, findings, creds)
+            except Exception as e:  # pragma: no cover - Defensive
+                typer.secho(f"[structured] mapping failed for {cdm.toolname}: {e}",
+                            fg=typer.colors.YELLOW)
+
     def run(self):
         self.db = CanonicalDB(self.db_path)
         try:
@@ -81,6 +96,7 @@ class DBWriter(threading.Thread):
                 try:
                     if isinstance(task, InsertCanonical):
                         self.db.insert(task.obj)
+                        self._populate_structured(task.obj)
 
                     elif isinstance(task, UpsertSetting):
                         self.db.add_or_update_settings(task.obj)

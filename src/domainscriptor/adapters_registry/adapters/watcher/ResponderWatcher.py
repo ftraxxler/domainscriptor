@@ -56,7 +56,13 @@ class Event:
 
 
 class ResponderLogWatcher:
-    def __init__(self, queue, path: str = DEFAULT_PATH):
+    def __init__(self, queue, path: str = None):
+        if path is None:
+            try:
+                from domainscriptor.config import get_config
+                path = get_config().tools.responder_log
+            except Exception:
+                path = DEFAULT_PATH
         self.path = path
         self.events: List[Event] = []
         self.queue = queue

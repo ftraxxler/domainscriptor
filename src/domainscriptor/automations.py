@@ -43,11 +43,11 @@ def get_ldap_security_commands():
     return [
 
         # Vuln-Checks
-        {"toolname": "nxc", "creds_required": False, "vuln": "asreproasting",
-         "parameters": {"protocol": "ldap", "module": "zerologon"}},
-
         {"toolname": "nxc", "creds_required": True, "vuln": "asreproasting",
-         "parameters": {"protocol": "ldap", "extra_args": "--asreproast"}},
+         "parameters": {"protocol": "ldap", "extra_args": "--asreproast output.txt"}},
+
+        {"toolname": "nxc", "creds_required": True, "vuln": "kerberoasting",
+         "parameters": {"protocol": "ldap", "extra_args": "--kerberoasting output.txt"}},
 
         {"toolname": "nxc", "creds_required": True, "vuln": "Get-User-Desc",
          "parameters": {"protocol": "ldap", "module": "get-desc-users"}},

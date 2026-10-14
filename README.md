@@ -21,6 +21,8 @@ Jedes Tool ist über einen eigenen Adapter angebunden und wird beim Start automa
 | `nmap` | nmap |
 | `nslookup` | nslookup |
 | `bloodhound-ce` | bloodhound-ce-python |
+| `kerbrute` | kerbrute (User-Enum / Password-Spray) |
+| `secretsdump` | impacket-secretsdump (NTLM-Hashes / Kerberos-Keys) |
 
 ---
 
@@ -91,6 +93,54 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 > Manuell gesetzte Umgebungsvariablen haben immer Vorrang vor der `.env`-Datei.
 
+### Konfigurationsdatei (TOML)
+
+Ausgabepfade, Web-UI, KI-Provider und Tool-Einstellungen lassen sich zentral über eine
+TOML-Datei steuern. Eine Beispieldatei erzeugst du mit:
+
+```bash
+domainscriptor config init          # schreibt ./domainscriptor.toml
+domainscriptor config show          # zeigt die effektiv geladene Konfiguration
+```
+
+Suchreihenfolge: `DOMAINSCRIPTOR_CONFIG` (Pfad) → `./domainscriptor.toml` → `~/.config/domainscriptor/config.toml`.
+
+```toml
+[paths]
+work_dir       = "."        # Basis für targets.txt, loot/, reports/, ...
+db_dir         = "."
+loot_dir       = "loot"
+report_dir     = "reports"
+
+[web]
+enabled = true
+host    = "127.0.0.1"
+port    = 5000
+
+[ai]
+provider = "openrouter"      # openrouter | anthropic | openai
+model    = ""                 # leer = Provider-Default
+
+[tools]
+responder_log   = "/usr/share/responder/logs/Responder-Session.log"
+default_timeout = 300
+```
+
+> Reihenfolge der Priorität: Defaults < TOML-Datei < Umgebungsvariablen.
+> Da sich Domainscriptor per `sudo` auf Root eskaliert, ist die projekt-lokale
+> `./domainscriptor.toml` (oder `DOMAINSCRIPTOR_CONFIG`) zuverlässiger als `~/.config`.
+
+### Report-Export
+
+Die gesammelten Findings lassen sich jederzeit als Bericht exportieren:
+
+```
+report                      → Markdown-Report nach reports/ (Zeitstempel-Name)
+report html                 → HTML-Report (dunkles Theme, eigenständige Datei)
+report json out.json        → JSON-Export unter eigenem Pfad
+report markdown --ai        → Markdown inkl. KI-Analyse der Findings
+```
+
 ---
 
 ## Start
@@ -124,18 +174,36 @@ Alle Befehle werden innerhalb der interaktiven Shell (`domainscriptor start`) au
 | `relayable` | Relayable Hosts aus `smb_relayable.txt` anzeigen |
 | `shortcuts <shortcut> [proxy]` | Vordefinierte Befehlssequenzen ausführen |
 | `ai <suggest\|analyze>` | KI-Assistent: Vorschläge oder Schwachstellenanalyse |
+| `report [markdown\|html\|json] [pfad] [--ai]` | Findings als Bericht exportieren (optional mit KI-Analyse) |
+| `config [show\|init]` | Effektive Konfiguration anzeigen oder Beispiel-Config schreiben |
 
 ### fetch
 
 Liest normalisierte Ergebnisse aus der SQLite-Datenbank.
 
 ```
-fetch                        → alle Einträge
+fetch                        → alle Roh-Einträge (canonical_data)
 fetch byIp 192.168.0.1       → nach IP filtern
 fetch byProtocol SMB         → nach Protokoll filtern
 fetch byToolname nxc         → nach Tool filtern
 fetch search zerologon       → Volltextsuche
+fetch hosts                  → entdeckte Hosts (IP, Hostname, OS, Domain)
+fetch findings [severity]    → priorisierte Findings (optional nach Severity gefiltert)
+fetch creds                  → gefundene/zurückgewonnene Zugangsdaten
 ```
+
+### Datenmodell
+
+Jedes Ergebnis wird roh als JSON in `canonical_data` protokolliert (Audit-Log) **und**
+zusätzlich automatisch in normalisierte Tabellen überführt:
+
+- **`hosts`** — pro Host eindeutig (IP/Hostname), mit OS und Domain, dedupliziert.
+- **`findings`** — kategorisiert (`RECON`/`VULN`/`MISCONFIG`/`CRED`/`SHARE`/`AD`) und mit
+  Severity (`info`…`critical`); dedupliziert pro (Host, Tool, Protokoll, Titel).
+- **`credentials`** — gefundene Secrets (`password`/`nt_hash`/`aes_key`/…) mit Quelle und Host.
+
+Diese Struktur speist die priorisierte Ansicht in `fetch findings`, den Report-Export und
+die KI-Analyse. Bestehende Datenbanken werden beim Start automatisch migriert.
 
 ### settings
 
