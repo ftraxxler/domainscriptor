@@ -5,6 +5,7 @@ targets.txt
 dc_ips.txt
 loot/
 reports/
+logs/
 domainscriptor.toml
 sample_creds/
 # Byte-compiled / optimized / DLL files

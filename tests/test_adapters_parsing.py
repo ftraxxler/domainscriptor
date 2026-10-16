@@ -81,3 +81,54 @@ def test_nxc_line_parse():
     assert entry.ip == "10.0.0.5"
     assert entry.port == 445
     assert entry.hostname == "DC01"
+
+
+def test_certipy_find_parse():
+    from domainscriptor.adapters_registry.adapters.certipy import (
+        CertipyAdapter, parse_certipy_find,
+    )
+    out = """
+Certificate Templates
+  0
+    Template Name                       : ESC1-Template
+    Display Name                        : ESC1 Template
+    [!] Vulnerabilities
+      ESC1                              : 'CORP.LOCAL\\\\Domain Users' can enroll, enrollee supplies subject
+  1
+    Template Name                       : WebServer
+    [!] Vulnerabilities
+      ESC4                              : 'CORP.LOCAL\\\\Domain Users' has dangerous permissions
+"""
+    findings = parse_certipy_find(out)
+    escs = {(f.esc, f.template) for f in findings}
+    assert ("ESC1", "ESC1-Template") in escs
+    assert ("ESC4", "WebServer") in escs
+
+    adapter = CertipyAdapter()
+    adapter.used_target = "10.0.0.1"
+    result = adapter.normalizer(findings)
+    assert len(result) == 1
+    assert result[0].protocol == "ADCS"
+    assert result[0].toolname == "certipy"
+
+
+def test_certipy_build_command_identity_and_flags():
+    from domainscriptor.adapters_registry.adapters.certipy import CertipyAdapter
+    adapter = CertipyAdapter()
+    cmd = adapter.build_command(
+        target="10.0.0.1", domain="corp.local", username="admin", password="pw",
+    )
+    assert cmd[:2] == ["certipy-ad", "find"]
+    assert "admin@corp.local" in cmd
+    assert "-dc-ip" in cmd and "10.0.0.1" in cmd
+    assert "-stdout" in cmd and "-vulnerable" in cmd
+
+
+def test_certipy_build_command_requires_creds():
+    from domainscriptor.adapters_registry.adapters.certipy import CertipyAdapter
+    adapter = CertipyAdapter()
+    try:
+        adapter.build_command(target="10.0.0.1", username="admin")
+        assert False, "should raise without password/hashes"
+    except Exception:
+        pass

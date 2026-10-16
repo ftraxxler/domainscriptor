@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import threading
 from urllib.parse import urlencode
@@ -269,6 +270,17 @@ def create_app(db_reader: DBReader) -> Flask:
 
 def start_in_thread(db_reader: DBReader, host: str = "127.0.0.1", port: int = 5000) -> None:
     app = create_app(db_reader)
+
+    # Silence the Flask/Werkzeug development server: no startup banner, no
+    # "development server" warning, no per-request access logs. The caller
+    # prints a single "Web UI: <url>" line instead.
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    try:
+        import flask.cli
+        flask.cli.show_server_banner = lambda *args, **kwargs: None
+    except Exception:
+        pass
+
     thread = threading.Thread(
         target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
         name="domainscriptor-webui",

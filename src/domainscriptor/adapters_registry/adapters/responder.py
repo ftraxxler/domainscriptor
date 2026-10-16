@@ -29,3 +29,6 @@ class ResponderAdapter(Adapter):
 
     def parse_output(self, stdout: str):
         return None
+
+    def normalizer(self, entries=None):
+        return None

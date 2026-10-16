@@ -31,6 +31,12 @@ class PathsConfig:
     dc_file: str = "dc_ips.txt"
     loot_dir: str = "loot"
     report_dir: str = "reports"
+    log_dir: str = "logs"
+
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"
 
 
 @dataclass
@@ -58,6 +64,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # ── Pfad-Helfer ─────────────────────────────────────────────────────────
     def path(self, name: str) -> Path:
@@ -130,6 +137,10 @@ def _apply_env_overrides(cfg: Config) -> None:
         cfg.web.enabled = _as_bool(env["DOMAINSCRIPTOR_WEB_ENABLED"])
     if "DOMAINSCRIPTOR_RESPONDER_LOG" in env:
         cfg.tools.responder_log = env["DOMAINSCRIPTOR_RESPONDER_LOG"]
+    if "DOMAINSCRIPTOR_LOG_DIR" in env:
+        cfg.paths.log_dir = env["DOMAINSCRIPTOR_LOG_DIR"]
+    if "DOMAINSCRIPTOR_LOG_LEVEL" in env:
+        cfg.logging.level = env["DOMAINSCRIPTOR_LOG_LEVEL"].upper()
     # AI: AI_PROVIDER wird auch direkt vom ai_client gelesen – hier für Konsistenz.
     if "AI_PROVIDER" in env:
         cfg.ai.provider = env["AI_PROVIDER"].lower()
@@ -154,6 +165,8 @@ def load_config(path: Optional[Path] = None) -> Config:
             cfg.ai = _coerce_section(AIConfig, raw["ai"])
         if isinstance(raw.get("tools"), dict):
             cfg.tools = _coerce_section(ToolsConfig, raw["tools"])
+        if isinstance(raw.get("logging"), dict):
+            cfg.logging = _coerce_section(LoggingConfig, raw["logging"])
 
     _apply_env_overrides(cfg)
     return cfg
@@ -183,6 +196,10 @@ relayable_file = "smb_relayable.txt"
 dc_file       = "dc_ips.txt"
 loot_dir      = "loot"
 report_dir    = "reports"
+log_dir       = "logs"              # domainscriptor.log + commands.log
+
+[logging]
+level = "INFO"                      # DEBUG | INFO | WARNING | ERROR
 
 [web]
 enabled = true

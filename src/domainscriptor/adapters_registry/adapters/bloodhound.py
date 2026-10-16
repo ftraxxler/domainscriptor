@@ -73,8 +73,12 @@ class BloodhoundAdapter(Adapter):
             Path(output_dir) if output_dir else Path("loot") / "bloodhound" / domain
         )
         out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = out_dir.resolve()
         self.output_dir = out_dir
         self.used_domain = domain
+        # bloodhound-ce-python has no output-directory flag; it writes JSON into the
+        # current working directory, so we run it from out_dir instead.
+        self.cwd = str(out_dir)
 
         cmd = [
             self.executable,
@@ -86,8 +90,6 @@ class BloodhoundAdapter(Adapter):
             domain,
             "-c",
             collection_method,
-            "--outputdirectory",
-            str(out_dir),
         ]
 
         if dc:

@@ -6,6 +6,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "Fabian Traxler"}]
+keywords = ["active-directory", "pentest", "security", "cli", "red-team", "smb", "ldap"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Security",
+]
 dependencies = [
   "typer>=0.12",           # CLI
   "prompt_toolkit>=3.0.52", #Shell History
@@ -15,13 +26,18 @@ dependencies = [
   "tenacity>=9.0",         # Retry
   "netifaces2>=0.0.22",     # Necessary for responder (drop-in replacement for unmaintained netifaces, ships prebuilt wheels)
   "aioquic>=1.3.0",        # Necessary for responder
-  "click>=8.4.0",
+  "click>=8.1",            # used directly (click.exceptions); also a Typer dependency
   "python-dotenv>=1.0",    # .env config file support
   "flask>=3.0",            # Web UI
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2", "pytest-cov", "ruff", "mypy", "types-requests"]
+
+[project.urls]
+Homepage = "https://github.com/ftraxxler/domainscriptor"
+Repository = "https://github.com/ftraxxler/domainscriptor"
+Issues = "https://github.com/ftraxxler/domainscriptor/issues"
 
 [project.scripts]
 domainscriptor = "domainscriptor.main:main"   

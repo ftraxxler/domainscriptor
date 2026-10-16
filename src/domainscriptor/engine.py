@@ -1,6 +1,7 @@
 from datetime import datetime
 import re
 import subprocess
+import time
 
 from queue import Queue
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import List, Tuple
 
 
 import typer
+from rich.console import Console
+from rich.table import Table
+from rich import box
 from domainscriptor.Runner import Runner
 from domainscriptor.automations import *
 from domainscriptor.ai_client import get_ai_client
@@ -22,6 +26,7 @@ from domainscriptor.adapters_registry.adapters.smbexec import SMBExecAdapter
 from domainscriptor.adapters_registry.adapters.smbclient import SMBClientAdapter
 from domainscriptor.adapters_registry.adapters.kerbrute import KerbruteAdapter
 from domainscriptor.adapters_registry.adapters.secretsdump import SecretsdumpAdapter
+from domainscriptor.adapters_registry.adapters.certipy import CertipyAdapter
 from domainscriptor.adapters_registry.abstract_adapter import Adapter
 from domainscriptor.adapters_registry.registry import Adapter_Registry
 from domainscriptor.config import get_config
@@ -100,6 +105,30 @@ def _pretty_format_settings(settings: List[Tuple[str, SettingsDataModel]]):
     table = "\n".join([header_line, separator] + row_lines)
 
     return table
+
+
+_CONSOLE = Console()
+
+
+def _first_doc_line(cls) -> str:
+    """First meaningful line of a class docstring (for adapter descriptions)."""
+    doc = (cls.__doc__ or "").strip()
+    for line in doc.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
+
+
+def _format_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
 
 
 def _ascii_table(headers: List[str], rows: List[List[str]], empty_msg: str) -> str:
@@ -197,6 +226,7 @@ class Engine:
         self.queue = None
         self.db_writer: DBWriter = None
         self.db_reader: DBReader = None
+        self.created_new_db = False
         self.load_adapters()
 
     def _p(self, name: str) -> Path:
@@ -215,6 +245,7 @@ class Engine:
         self.adapter_registry.register(BloodhoundAdapter)
         self.adapter_registry.register(KerbruteAdapter)
         self.adapter_registry.register(SecretsdumpAdapter)
+        self.adapter_registry.register(CertipyAdapter)
 
     def init_database_connection(self, db_dir: str = None):
         self.queue = Queue()
@@ -224,6 +255,7 @@ class Engine:
         db_files = list(db_dir.glob("*.db"))
         db_path = self._choose_database(db_files, db_dir)
         new_db = not db_path.exists()
+        self.created_new_db = new_db
         db_writer = DBWriter(db_path, self.queue)
         if new_db:
             settings = None
@@ -243,6 +275,36 @@ class Engine:
 
     def show_adapters(self):
         return self.adapter_registry.list_names()
+
+    def render_adapters(self):
+        """Pretty, informative table of all adapters (available and disabled)."""
+        infos = self.adapter_registry.list_all()
+        available = sum(1 for i in infos if i["available"])
+        table = Table(
+            title=f"Adapters  ({available}/{len(infos)} available)",
+            box=box.ROUNDED, header_style="bold cyan", title_style="bold",
+            expand=False,
+        )
+        table.add_column("Adapter", style="bold")
+        table.add_column("Binary")
+        table.add_column("Status", justify="center")
+        table.add_column("Mode")
+        table.add_column("Info", overflow="fold")
+
+        for info in infos:
+            cls = info["cls"]
+            if info["available"]:
+                status = "[green]● available[/]"
+                detail = _first_doc_line(cls)
+            else:
+                status = "[red]○ disabled[/]"
+                detail = f"[dim]{info['error']}[/]"
+            mode = ("[magenta]background[/]"
+                    if getattr(cls, "run_background", False) else "foreground")
+            row_style = None if info["available"] else "dim"
+            table.add_row(cls.name, cls.executable, status, mode, detail, style=row_style)
+
+        _CONSOLE.print(table)
 
     def get_help_List(self):
         adapters = self.adapter_registry._adapters
@@ -266,8 +328,63 @@ class Engine:
     def show_processes(self):
         return self.runner.show_processes()
 
+    def render_processes(self):
+        """Pretty table of running background jobs with PID, uptime, command, log."""
+        rows = self.runner.job_info()
+        if not rows:
+            _CONSOLE.print("[dim]No running background jobs. "
+                           "Start one with 'runcommand <adapter> ... &'.[/]")
+            return
+        table = Table(
+            title=f"Background jobs  ({len(rows)} running)",
+            box=box.ROUNDED, header_style="bold cyan", title_style="bold",
+            expand=False,
+        )
+        table.add_column("Job", style="bold")
+        table.add_column("PID", justify="right")
+        table.add_column("Status", justify="center")
+        table.add_column("Uptime", justify="right")
+        table.add_column("Command", overflow="fold")
+        table.add_column("Log", overflow="fold")
+
+        now = time.time()
+        for r in rows:
+            status = "[green]● running[/]" if r["alive"] else "[yellow]● exiting[/]"
+            uptime = _format_uptime(now - r["started"]) if r.get("started") else "?"
+            table.add_row(
+                r["job"], str(r["pid"] or "?"), status, uptime,
+                r["cmd"] or "-", r["logfile"] or "-",
+            )
+        _CONSOLE.print(table)
+        _CONSOLE.print("[dim]'reattach <job>' to stream · 'showoutput <job>' to view · "
+                       "'stopprocess <job>' to stop[/]")
+
     def stop_process(self, name: str):
         return self.runner.stop_tool(name)
+
+    def list_job_names(self):
+        """All known background/foreground job names (including finished ones)."""
+        return sorted(self.runner.job_logs.keys())
+
+    def reattach_job(self, name: str):
+        """Re-attach to a background job: stream its output live again. Ctrl-Z
+        detaches once more; if the job already finished, its full log is shown."""
+        detached = self.runner.follow(name)
+        if detached:
+            typer.secho(
+                f"\n[bg] {name} wieder in den Hintergrund verschoben.",
+                fg=typer.colors.YELLOW,
+            )
+
+    def show_job_output(self, name: str, max_lines: int = 40):
+        output = self.runner.read_output(name, max_lines=max_lines)
+        if output is None:
+            typer.secho(
+                f"No output log for job '{name}'. Use 'showprocesses' for job names.",
+                fg=typer.colors.YELLOW,
+            )
+            return
+        typer.echo(output)
 
     def exit(self):
         self.runner.stop_all()
@@ -330,13 +447,18 @@ class Engine:
         # Kein Default gesetzt -> Fallback auf den ersten Eintrag
         return setting_list[0][1]
 
-    def run_task(self, adapter_name: str, return_output=False, **kwargs):
+    def run_task(self, adapter_name: str, return_output=False, background=False,
+                 attach=False, **kwargs):
         try:
             adapter = self.create_adapter(adapter_name, **kwargs.pop("adapter_config", {}))
             #typer.echo(f"Logging Command: {kwargs}")
             default_settings = self.get_default_Credentials()
             # typer.echo(f"Default Settings {default_settings}")
-            data = adapter.run(self.runner, self.queue, auth=default_settings, **kwargs)
+            data = adapter.run(
+                self.runner, self.queue, auth=default_settings,
+                background=background, attach=attach, persist=self.write_data,
+                log_dir=str(self._p("log_dir")), **kwargs,
+            )
             if data:
                 # typer.echo(f"Logging normalized Data: {data}")
                 self.write_data(data)
@@ -684,6 +806,20 @@ class Engine:
 
         return report
 
+    def _first_saved_dc(self):
+        """Return the first DC IP saved in dc_ips.txt, or None if unavailable."""
+        dc_path = self._p("dc_file")
+        if not dc_path.exists():
+            return None
+        try:
+            for line in dc_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    return line
+        except OSError:
+            return None
+        return None
+
     def collect_bloodhound(self, domain=None, dc=None, collection_method="All,LoggedOn",
                             zip=False, timeout=1800):
         """
@@ -694,14 +830,25 @@ class Engine:
             typer.echo("bloodhound-ce-python adapter not available")
             return
 
-        if not self.get_default_Credentials():
+        creds = self.get_default_Credentials()
+        if not creds:
             typer.echo("No credentials configured. Use 'settings add' first.")
             return
 
+        # Pre-fill from stored data: domain from the default credentials,
+        # DC from the first entry in dc_ips.txt. The user can accept (Enter) or override.
         if not domain:
-            domain = typer.prompt("Enter AD domain (e.g. corp.local)")
+            domain_default = (creds.domain or "").strip() or None
+            domain = typer.prompt(
+                "AD domain (e.g. corp.local)",
+                default=domain_default,
+            ) if domain_default else typer.prompt("AD domain (e.g. corp.local)")
         if not dc:
-            dc = typer.prompt("Enter DC IP for collection (e.g. 10.0.0.1)")
+            dc_default = self._first_saved_dc()
+            dc = typer.prompt(
+                "DC IP for collection (e.g. 10.0.0.1)",
+                default=dc_default,
+            ) if dc_default else typer.prompt("DC IP for collection (e.g. 10.0.0.1)")
 
         typer.echo(f"Collecting AD data for domain {domain} (method={collection_method}) ...")
         result = self.run_task(
@@ -766,11 +913,13 @@ class Engine:
         typer.echo(f"Settings created for {settings}")
         return settings
 
-    def set_target(self):
-        typer.echo("Set the target IP ranges Format X.X.X.X(/Y) (separate by ,)")
-        targets = typer.prompt("Targets")
+    def _save_targets(self, raw_entries) -> int:
+        """Validate raw target entries and write them to the targets file.
+
+        Returns the number of valid targets saved (0 if none).
+        """
         valid, invalid = [], []
-        for raw in targets.split(","):
+        for raw in raw_entries:
             t = raw.strip()
             if not t:
                 continue
@@ -784,7 +933,7 @@ class Engine:
             )
         if not valid:
             typer.secho("No valid targets provided.", fg=typer.colors.RED)
-            return
+            return 0
 
         targets_path = self._p("targets_file")
         targets_path.parent.mkdir(parents=True, exist_ok=True)
@@ -792,9 +941,123 @@ class Engine:
             for target in valid:
                 f.write(target + "\n")
         typer.echo(f"Saved {len(valid)} target(s) to {targets_path}")
+        return len(valid)
+
+    def set_target(self):
+        targets_path = self._p("targets_file")
+
+        # Reuse a targets file that already exists at the configured location.
+        if targets_path.exists():
+            existing = [
+                line for line in targets_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if existing and typer.confirm(
+                f"Found existing {targets_path} with {len(existing)} target(s). Keep it?",
+                default=True,
+            ):
+                typer.echo(f"Keeping {len(existing)} target(s) from {targets_path}")
+                return
+
+        # Import targets from another file.
+        if typer.confirm("Load targets from a file?", default=False):
+            src = typer.prompt("Path to targets file")
+            src_path = Path(src).expanduser()
+            if not src_path.exists():
+                typer.secho(f"File not found: {src_path}", fg=typer.colors.RED)
+                return
+            self._save_targets(src_path.read_text(encoding="utf-8").splitlines())
+            return
+
+        # Manual entry.
+        typer.echo("Set the target IP ranges Format X.X.X.X(/Y) (separate by ,)")
+        targets = typer.prompt("Targets")
+        self._save_targets(targets.split(","))
 
     def _check_adapter_exists(self, adapter_name):
         return adapter_name in self.adapter_registry.list_names()
+
+    # ── Reconnaissance ──────────────────────────────────────────────────────
+
+    def reconnaissance_plan(self):
+        """Build an ordered recon plan from the available adapters.
+
+        Each entry is ``(command_preview, description, callable)``. Only steps whose
+        underlying tool is available are included.
+        """
+        plan = []
+        targets_file = self._p("targets_file")
+        has_targets = targets_file.exists()
+
+        if self._check_adapter_exists("nmap") and has_targets:
+            plan.append((
+                f"runcommand nmap targets_file={targets_file.name} ports=1-65535",
+                "Full TCP port scan (all 65535 ports) of all configured targets",
+                lambda tf=str(targets_file): self.run_task(
+                    "nmap", targets_file=tf, ports="1-65535",
+                ),
+            ))
+        if self._check_adapter_exists("nxc") and has_targets:
+            plan.append((
+                f"runcommand nxc protocol=smb targets_file={targets_file.name}",
+                "SMB host enumeration (hostname, OS, domain, SMB signing)",
+                lambda tf=str(targets_file): self.run_task(
+                    "nxc", protocol="smb", targets_file=tf,
+                ),
+            ))
+        if self._check_adapter_exists("nxc") or self._check_adapter_exists("nslookup"):
+            plan.append((
+                "shortcuts get_dc",
+                "Identify domain controllers (→ dc_ips.txt)",
+                self.get_dcs,
+            ))
+        if self._check_adapter_exists("nxc") and has_targets:
+            plan.append((
+                "shortcuts get_relayable",
+                "Find SMB-relayable hosts (→ smb_relayable.txt)",
+                self.get_relayable,
+            ))
+        if self._check_adapter_exists("bloodhound-ce") and self.get_default_Credentials():
+            plan.append((
+                "shortcuts collect_ad",
+                "Collect AD data via BloodHound (uses saved domain/DC as defaults)",
+                self.collect_bloodhound,
+            ))
+        if self._check_adapter_exists("certipy") and self.get_default_Credentials():
+            dc = self._first_saved_dc()
+            plan.append((
+                "runcommand certipy action=find vulnerable=true"
+                + (f" target={dc}" if dc else ""),
+                "Enumerate AD CS for vulnerable templates (ESC1-ESC16)",
+                lambda dc=dc: self.run_task("certipy", action="find", vulnerable=True,
+                                            **({"target": dc} if dc else {})),
+            ))
+        return plan
+
+    def offer_reconnaissance(self):
+        """After startup, preview the recon commands and run them on confirmation."""
+        plan = self.reconnaissance_plan()
+        if not plan:
+            return
+
+        typer.echo("\nReconnaissance would run the following commands:")
+        for i, (cmd, desc, _) in enumerate(plan, start=1):
+            typer.echo(f"  {i}. {cmd}")
+            typer.echo(f"     → {desc}")
+
+        if not typer.confirm("\nRun reconnaissance now?", default=False):
+            typer.echo("Skipped. You can run these commands manually at any time.")
+            return
+
+        for i, (cmd, _desc, fn) in enumerate(plan, start=1):
+            typer.secho(f"\n[recon {i}/{len(plan)}] {cmd}", fg=typer.colors.CYAN)
+            try:
+                result = fn()
+                if isinstance(result, str) and result:
+                    typer.echo(result)
+            except RuntimeError as e:
+                typer.secho(f"  step failed: {e}", fg=typer.colors.RED)
+        typer.echo("\nReconnaissance complete.")
 
     # ── Report-Export ───────────────────────────────────────────────────────
 

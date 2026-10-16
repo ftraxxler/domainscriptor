@@ -206,6 +206,25 @@ def _handle_bloodhound(cdm, host) -> MapResult:
     return host, [finding], []
 
 
+def _handle_certipy(cdm, host) -> MapResult:
+    from domainscriptor.adapters_registry.adapters.certipy import certipy_severity
+
+    findings: List[FindingModel] = []
+    for item in cdm.data:
+        esc = str(item.get("esc", "")).strip()
+        template = str(item.get("template", "")).strip()
+        desc = str(item.get("description", "")).strip()
+        title = f"ADCS {esc}" + (f" on template '{template}'" if template else "")
+        findings.append(FindingModel(
+            host=host.identifier, category=Category.VULN,
+            title=_truncate(title),
+            severity=Severity.CRITICAL if certipy_severity(esc) else Severity.HIGH,
+            protocol=cdm.protocol, tool=cdm.toolname,
+            evidence={"esc": esc, "template": template, "description": desc},
+        ))
+    return host, findings, []
+
+
 def _handle_default(cdm, host) -> MapResult:
     findings = [FindingModel(
         host=host.identifier, category=Category.RECON,
@@ -225,6 +244,7 @@ _HANDLERS = {
     "smbclient": _handle_smbclient,
     "nslookup": _handle_nslookup,
     "bloodhound-ce": _handle_bloodhound,
+    "certipy": _handle_certipy,
 }
 
 

@@ -1,9 +1,11 @@
 import os
 import sys
 import traceback
+from pathlib import Path
 from typing import Annotated, Optional
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 import typer
 import click
@@ -11,7 +13,10 @@ import shlex
 
 from domainscriptor.engine import Engine
 from . import project_info
-from .cli_completioner import MainCompleter, RuncommandCompleter, StopProcessCompleter
+from .cli_completioner import (
+    MainCompleter, RuncommandCompleter, StopProcessCompleter, JobNameCompleter,
+)
+from .logging_setup import get_logger, log_command
 
 info = project_info()
 
@@ -57,26 +62,26 @@ def version(ctx: typer.Context, adapter: Annotated[str, typer.Argument()] = None
         argument_handler(["--version"], standalone_mode=False)
 
 
-@argument_handler.command()
-def showAdapters(ctx: typer.Context):
+@argument_handler.command("showadapters")
+def show_adapters(ctx: typer.Context):
     """
     List all registered adapters, including their name, type, and current status (enabled/disabled).
     """
     eng: Engine = ctx.obj
-    typer.echo(f"{eng.show_adapters()}")
+    eng.render_adapters()
 
 
-@argument_handler.command()
-def showProcesses(ctx: typer.Context):
+@argument_handler.command("showprocesses")
+def show_processes(ctx: typer.Context):
     """
     Show background processes started by Domainscriptor
     """
     eng: Engine = ctx.obj
-    typer.echo(f"{eng.show_processes()}")
+    eng.render_processes()
 
 
-@argument_handler.command()
-def stopProcess(ctx: typer.Context, name: str):
+@argument_handler.command("stopprocess")
+def stop_process(ctx: typer.Context, name: str):
     """
     Stop a background process by NAME. Use 'showprocesses' to see valid process names.
     """
@@ -124,6 +129,8 @@ def start():
         engine = Engine(argument_handler)
         engine.init_database_connection()
         engine.start_webui()
+        if engine.created_new_db:
+            engine.offer_reconnaissance()
     except RuntimeError as runtimeError:
         typer.secho(f"Error: {runtimeError.args[0]}", fg=typer.colors.RED)
         raise typer.Exit()
@@ -136,6 +143,8 @@ def start():
             "runcommand": None,
             "showadapters": None,
             "showprocesses": None,
+            "showoutput": None,
+            "reattach": None,
             "stopprocess": None,
             "fetch": {"byIp": None, "byToolname": None, "byProtocol": None, "search": None,
                       "hosts": None, "findings": None, "creds": None},
@@ -151,9 +160,28 @@ def start():
     base_completer = NestedCompleter.from_nested_dict(commands)
     runcommand_completer = RuncommandCompleter(adapter_helps)
     stopprocess_completer = StopProcessCompleter(engine.show_processes)#Wichtig hier Funktion übergeben
+    command_completers = {
+        "stopprocess": stopprocess_completer,
+        "showoutput": JobNameCompleter("showoutput", engine.list_job_names),
+        "reattach": JobNameCompleter("reattach", engine.list_job_names),
+    }
+
+    # Persistent command history so the arrow keys walk through all past commands
+    # (and across restarts), not just the most recent one.
+    history = None
+    try:
+        hist_path = Path(engine.config.path("log_dir")) / "prompt_history"
+        hist_path.parent.mkdir(parents=True, exist_ok=True)
+        history = FileHistory(str(hist_path))
+    except OSError:
+        history = None
+
     session = PromptSession(
         "domainscriptor> ",
-        completer=MainCompleter(base_completer,runcommand_completer,stopprocess_completer),
+        completer=MainCompleter(
+            base_completer, runcommand_completer, command_completers,
+        ),
+        history=history,
     )
     with patch_stdout(raw=True):
         while True:
@@ -169,6 +197,7 @@ def start():
                 if not command:
                     continue
 
+                log_command(command, source="user")
                 args = shlex.split(command)
                 argument_handler(
                     args=args, standalone_mode=False, obj=engine, allow_extra_args=True
@@ -187,18 +216,55 @@ def start():
             except click.exceptions.UsageError as exc:
                 typer.secho(f"❌ Fehler: {exc.message}", fg=typer.colors.RED)
             except Exception as exc:
+                get_logger("shell").exception("Unexpected error running command: %s", command)
                 typer.secho(f"Unexpected error: {exc}", fg=typer.colors.RED)
                 traceback.print_exc()
 
 
-@argument_handler.command(context_settings={"allow_extra_args": True})
-def runCommand(command: str, ctx: typer.Context):
+@argument_handler.command("runcommand", context_settings={"allow_extra_args": True})
+def run_command(command: str, ctx: typer.Context):
     """
     Execute a command inside a specific adapter. Use this to run adapter-specific actions without starting a full workflow.
+
+    Append '&' or pass 'background=true' to run the command in the background and
+    keep working; view its output later with 'showoutput <job>'.
     """
     eng: Engine = ctx.obj
-    kwargs = dict(a.split("=", 1) for a in ctx.args if "=" in a)
-    eng.run_task(command, **kwargs)
+    args = list(ctx.args)
+
+    background = False
+    if "&" in args:
+        background = True
+        args = [a for a in args if a != "&"]
+
+    kwargs = dict(a.split("=", 1) for a in args if "=" in a)
+    bg_kw = kwargs.pop("background", None)
+    if bg_kw is not None:
+        background = str(bg_kw).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    # Interactive foreground runs attach so the user can press Ctrl-Z to send the
+    # command to the background and keep working.
+    eng.run_task(command, background=background, attach=not background, **kwargs)
+
+
+@argument_handler.command("showoutput")
+def show_output(ctx: typer.Context, name: str,
+                lines: Annotated[int, typer.Argument()] = 40):
+    """
+    Show the last output lines of a background job (see 'showprocesses' for names).
+    """
+    eng: Engine = ctx.obj
+    eng.show_job_output(name, max_lines=lines)
+
+
+@argument_handler.command("reattach")
+def reattach(ctx: typer.Context, name: str):
+    """
+    Re-attach to a running background job: stream its output live again (Ctrl-Z
+    detaches once more). If the job already finished, its full log is shown.
+    """
+    eng: Engine = ctx.obj
+    eng.reattach_job(name)
 
 
 @argument_handler.command(context_settings={"allow_extra_args": True})

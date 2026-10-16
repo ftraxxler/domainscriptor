@@ -98,3 +98,6 @@ class NTLMRelayAdapter(Adapter):
 
     def parse_output(self, stdout: str) -> Optional[Dict[str, Any]]:
         pass
+
+    def normalizer(self, entries=None):
+        return None
