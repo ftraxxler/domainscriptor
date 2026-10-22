@@ -278,8 +278,8 @@ Predefined command sequences for common checks.
 | `shortcuts get_dc` | Find domain controllers → `dc_ips.txt` (via nxc or nslookup fallback) |
 | `shortcuts smb_check [proxy]` | Full SMB security check (11 checks). At the IP prompt you can enter `all` to test every target in `targets.txt` |
 | `shortcuts ldap_check [proxy]` | Full LDAP security check (10 checks). At the IP prompt you can enter `all` to test every target in `targets.txt` |
-| `shortcuts list_shares` | List a host's SMB shares (colored, readable) and store them as a dedicated `SMB-SHARES` entry. At the prompt enter `all` for every target in `targets.txt` |
-| `shortcuts hunt_creds` | Search SMB shares for credential-bearing files and download them. If only administrative shares (`C$`, `F$`, `ADMIN$`, ...) are visible it offers to scan those too. At the prompt enter `all` for every target in `targets.txt` |
+| `shortcuts list_shares` | List SMB shares (colored, readable), stored as a dedicated `SMB-SHARES` entry. The prompt accepts a host, a CIDR subnet (`10.0.0.0/24`), a range (`10.0.0.1-50`) or `all` (targets.txt) — subnets/ranges are expanded to single hosts |
+| `shortcuts hunt_creds` | Search SMB shares for credential-bearing files. You pick which shares to scan (or Enter for non-admin; `all` for every share). Files are fetched one at a time, scanned, and **deleted again if they contain no credentials** (memory-friendly); only hits are kept and recorded. If only administrative shares (`C$`, `F$`, `ADMIN$`) are visible it offers to scan those too. Enter `all` at the target prompt for every host in `targets.txt` |
 | `shortcuts diff_shares` | Compare share/file visibility between stored users. At the prompt enter `all` for every target in `targets.txt` |
 | `shortcuts collect_ad` | Collect AD data via bloodhound-ce-python (computers, users, groups, GPOs, ...) |
 

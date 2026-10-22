@@ -1,5 +1,6 @@
 from domainscriptor import term_ui as tui
 from domainscriptor import web
+from domainscriptor.engine import Engine
 
 
 # ── term_ui: detach-key parsing ───────────────────────────────────────────────
@@ -82,3 +83,37 @@ def test_render_generic_fallback_for_flat_dicts():
 
 def test_render_data_empty_is_blank():
     assert str(web._render_data("SMB-SHARES", [])) == ""
+
+
+# ── engine: subnet / range expansion for list_shares ──────────────────────────
+
+def _bare_engine():
+    return Engine.__new__(Engine)  # no __init__: we only exercise pure helpers
+
+
+def test_expand_range_dotted_and_shorthand():
+    assert Engine._expand_range("10.0.0.1-10.0.0.3") == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    assert Engine._expand_range("10.0.0.1-3") == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    assert Engine._expand_range("10.0.0.5-10.0.0.1") == []  # descending -> empty
+
+
+def test_expand_target_cidr():
+    eng = _bare_engine()
+    assert eng._expand_target("10.0.0.0/30") == ["10.0.0.1", "10.0.0.2"]
+    assert eng._expand_target("10.0.0.5/32") == ["10.0.0.5"]
+
+
+def test_expand_target_passthrough_host():
+    eng = _bare_engine()
+    assert eng._expand_target("dc01.corp.local") == ["dc01.corp.local"]
+    assert eng._expand_target("10.0.0.9") == ["10.0.0.9"]
+    assert eng._expand_target("") == []
+
+
+def test_prune_empty_dirs(tmp_path):
+    nested = tmp_path / "loot" / "share" / "sub"
+    nested.mkdir(parents=True)
+    (tmp_path / "loot" / "share" / "keep.txt").write_text("x")
+    Engine._prune_empty_dirs(tmp_path / "loot")
+    assert not nested.exists()                       # empty dirs gone
+    assert (tmp_path / "loot" / "share" / "keep.txt").exists()  # non-empty kept

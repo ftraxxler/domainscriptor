@@ -37,8 +37,8 @@ def _supports_color() -> bool:
     if os.environ.get("FORCE_COLOR"):
         return True
     try:
-        return sys.stdout.isatty()
-    except (AttributeError, ValueError):
+        return os.isatty(1)
+    except OSError:
         return False
 
 
@@ -64,6 +64,25 @@ def status_tag(ok: bool) -> str:
 
 # ── Pager (mouse-wheel scrollback for long output) ─────────────────────────────
 
+def stdout_is_tty() -> bool:
+    """Whether real terminal output is available.
+
+    ``sys.stdout`` is unreliable here: inside prompt_toolkit's ``patch_stdout``
+    it is swapped for a proxy whose ``isatty()`` is False even in a real
+    terminal, which would wrongly disable the pager. The OS-level fd 1 is not
+    touched by that patch, so check it directly.
+    """
+    for probe in (1, sys.__stdout__, sys.stdout):
+        try:
+            if isinstance(probe, int):
+                return os.isatty(probe)
+            if probe is not None and probe.isatty():
+                return True
+        except (AttributeError, ValueError, OSError):
+            continue
+    return False
+
+
 def page_output(text, pager_cmd: Optional[str] = None,
                 min_lines: Optional[int] = None) -> None:
     """Print ``text``; if it is taller than the terminal, show it through a pager
@@ -76,11 +95,7 @@ def page_output(text, pager_cmd: Optional[str] = None,
         return
     text = str(text)
 
-    try:
-        is_tty = sys.stdout.isatty()
-    except (AttributeError, ValueError):
-        is_tty = False
-    if not is_tty:
+    if not stdout_is_tty():
         print(text)
         return
 
@@ -102,13 +117,17 @@ def page_output(text, pager_cmd: Optional[str] = None,
 
     try:
         env = os.environ.copy()
-        # -R: keep ANSI colors; -F: don't page if it fits; -X: keep output on exit.
-        env.setdefault("LESS", "RFX")
+        # R: keep ANSI colors. Full-screen less (no -F/-X) so PgUp/PgDn/arrows and
+        # the mouse wheel all scroll — the whole point of paging here.
+        env["LESS"] = "R"
         proc = subprocess.Popen(shlex.split(pager_cmd), stdin=subprocess.PIPE,
                                 text=True, env=env)
         proc.communicate(text)
     except (OSError, ValueError, BrokenPipeError):
         print(text)
+    except KeyboardInterrupt:
+        # q / Ctrl-C out of the pager: swallow so it doesn't bubble to the shell.
+        pass
 
 
 # ── Detach key (replaces Ctrl-Z / SIGTSTP) ─────────────────────────────────────

@@ -1,6 +1,8 @@
 from datetime import datetime
+import ipaddress
 import re
 import subprocess
+import sys
 import time
 
 from queue import Queue
@@ -578,6 +580,45 @@ class Engine:
             return []
         return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
 
+    @staticmethod
+    def _expand_range(spec: str):
+        """Expand '10.0.0.1-10.0.0.50' or '10.0.0.1-50' into a list of IP strings."""
+        try:
+            start_s, end_s = spec.split("-", 1)
+            start = ipaddress.ip_address(start_s.strip())
+            end_s = end_s.strip()
+            if "." not in end_s and ":" not in end_s:  # last-octet shorthand
+                base = str(start).rsplit(".", 1)[0]
+                end = ipaddress.ip_address(f"{base}.{end_s}")
+            else:
+                end = ipaddress.ip_address(end_s)
+            if int(end) < int(start):
+                return []
+            return [str(ipaddress.ip_address(i)) for i in range(int(start), int(end) + 1)]
+        except (ValueError, IndexError):
+            return []
+
+    def _expand_target(self, target: str):
+        """Turn a single host, a CIDR (10.0.0.0/24) or a range into a list of hosts.
+
+        Non-IP values (hostnames) are returned unchanged as a single-element list.
+        """
+        target = str(target).strip()
+        if not target:
+            return []
+        if "/" in target:
+            try:
+                net = ipaddress.ip_network(target, strict=False)
+            except ValueError:
+                return [target]
+            hosts = [str(h) for h in net.hosts()]
+            return hosts or [str(net.network_address)]  # /32 and /31 edge cases
+        if "-" in target:
+            expanded = self._expand_range(target)
+            if expanded:
+                return expanded
+        return [target]
+
     def check_smb_security(self, ip=None, proxy=False):
         relay = None
         if proxy==True:
@@ -654,7 +695,9 @@ class Engine:
         Aufbereitung und legt das Ergebnis als eigenes 'SMB-SHARES'-Protokoll in
         der DB ab (im Web eigener Eintrag, analog zu SMB-DIFF / SMB-LOOT).
 
-        target='all' listet die Shares für jeden Host aus targets.txt.
+        target kann ein einzelner Host, ein CIDR-Subnetz (10.0.0.0/24), eine
+        Range (10.0.0.1-50) oder 'all' (targets.txt) sein. Subnetze/Ranges werden
+        in Einzelhosts aufgelöst und nacheinander abgefragt.
         """
         if not self._check_adapter_exists("smbclient"):
             typer.echo("smbclient adapter not available")
@@ -662,59 +705,138 @@ class Engine:
 
         if not target:
             target = typer.prompt(
-                "Enter target IP/hostname to list shares for (or 'all' for targets.txt)")
-
-        if str(target).strip().lower() == "all":
-            targets = self._read_target_list()
-            if not targets:
-                typer.echo("No targets found. Use 'targets set' first.")
-                return
-            reports = []
-            for t in targets:
-                typer.secho(f"\n=== Shares on {t} ===", fg=typer.colors.CYAN, bold=True)
-                res = self.list_shares(target=t)
-                reports.append(f"[{t}]\n{res or '(nothing)'}")
-            return "\n\n".join(reports)
+                "Enter target to list shares for "
+                "(host, CIDR 10.0.0.0/24, range 10.0.0.1-50, or 'all')")
 
         auth = self.get_default_Credentials()
         if not auth:
             typer.echo("No credentials configured. Use 'settings add' first.")
             return
 
-        adapter = self.create_adapter("smbclient")
-        cmd = adapter.build_command(target=target, list_shares=True, auth=auth)
-        result = self._smb_raw_run(cmd, timeout=30)
-        if not result:
-            typer.echo(f"Could not list shares on {target} (timeout or smbclient missing).")
-            return
-        shares = adapter.parse_share_entries(result.stdout)
-        if not shares:
-            combined = (result.stdout + result.stderr).upper()
-            if "NT_STATUS" in combined or "LOGON_FAILURE" in combined:
-                typer.echo(f"Access denied / logon failure listing shares on {target}.")
-            else:
-                typer.echo(f"No shares found on {target}.")
+        # Resolve the requested target(s) into a flat, de-duplicated host list.
+        specs = (self._read_target_list()
+                 if str(target).strip().lower() == "all" else [target])
+        hosts = []
+        for spec in specs:
+            for h in self._expand_target(spec):
+                if h not in hosts:
+                    hosts.append(h)
+        if not hosts:
+            typer.echo("No hosts to scan (empty targets.txt or unresolved target).")
             return
 
-        report = adapter.prettify_shares(shares)
+        multi = len(hosts) > 1
+        if len(hosts) > 64 and not typer.confirm(
+                f"This expands to {len(hosts)} hosts (smbclient -L each). Continue?",
+                default=False):
+            return
+
+        # Per-host timeout: a full subnet would stall on unreachable hosts at 30s
+        # each, so shorten it when scanning many.
+        timeout = 8 if multi else 30
+        reports = []
+        for host in hosts:
+            report = self._list_shares_one(host, auth, timeout=timeout, quiet=multi)
+            if report:
+                typer.secho(f"\n=== Shares on {host} ===", fg=typer.colors.CYAN, bold=True)
+                typer.echo(report)
+                reports.append(f"[{host}]\n{report}")
+
+        if multi and not reports:
+            typer.echo(f"No SMB shares found on any of the {len(hosts)} host(s).")
+        return "\n\n".join(reports) if reports else None
+
+    def _list_shares_one(self, target, auth, timeout=30, quiet=False):
+        """List one host's shares, persist them, and return the colored table
+        (or None). With ``quiet`` (subnet sweeps) unreachable/empty hosts stay
+        silent instead of printing a line each."""
+        adapter = self.create_adapter("smbclient")
+        cmd = adapter.build_command(target=target, list_shares=True, auth=auth)
+        result = self._smb_raw_run(cmd, timeout=timeout)
+        if not result:
+            if not quiet:
+                typer.echo(f"Could not list shares on {target} (timeout or smbclient missing).")
+            return None
+        shares = adapter.parse_share_entries(result.stdout)
+        if not shares:
+            if not quiet:
+                combined = (result.stdout + result.stderr).upper()
+                if "NT_STATUS" in combined or "LOGON_FAILURE" in combined:
+                    typer.echo(f"Access denied / logon failure listing shares on {target}.")
+                else:
+                    typer.echo(f"No shares found on {target}.")
+            return None
 
         # Persist as its own protocol/tool so the web UI shows a dedicated entry.
         self.write_data(CanonicalDataModel(
             "SMB-SHARES", target, "list_shares", datetime.now().isoformat(),
             [s.to_dict() for s in shares],
         ))
-        return report
+        return adapter.prettify_shares(shares)
+
+    def _discover_disk_shares(self, target, auth):
+        """Return (non_admin, admin) disk share names for ``target`` (IPC$ excluded)."""
+        list_adapter = self.create_adapter("smbclient")
+        cmd = list_adapter.build_command(target=target, list_shares=True, auth=auth)
+        result = self._smb_raw_run(cmd, timeout=30)
+        entries = list_adapter.parse_share_entries(result.stdout) if result else []
+        disk = [s.name for s in entries
+                if s.share_type == "Disk" and s.name.upper() != "IPC$"]
+        non_admin = [n for n in disk if not n.endswith("$")]
+        admin = [n for n in disk if n.endswith("$")]
+        return non_admin, admin
+
+    def _select_shares_interactive(self, target, non_admin, admin):
+        """Let the user pick which shares to hunt. Enter = non-admin default."""
+        listing = non_admin + admin
+        if not listing:
+            return []
+        typer.secho(f"Shares on {target}:", fg=typer.colors.CYAN, bold=True)
+        for i, name in enumerate(listing, 1):
+            tag = tui.color(" (admin)", "yellow") if name.endswith("$") else ""
+            typer.echo(f"  [{i}] {name}{tag}")
+        raw = typer.prompt(
+            "Shares to scan — numbers/names (comma-separated), 'all', "
+            "or Enter for non-admin shares",
+            default="", show_default=False).strip()
+
+        if not raw:
+            return list(non_admin)
+        if raw.lower() == "all":
+            return list(listing)
+
+        selected, seen = [], set()
+        for token in (t.strip() for t in raw.split(",")):
+            if not token:
+                continue
+            name = None
+            if token.isdigit():
+                idx = int(token)
+                if 1 <= idx <= len(listing):
+                    name = listing[idx - 1]
+            else:
+                for cand in listing:
+                    if cand.lower() == token.lower():
+                        name = cand
+                        break
+            if name and name not in seen:
+                seen.add(name)
+                selected.append(name)
+            elif name is None:
+                typer.secho(f"  (ignoring unknown share '{token}')", fg=typer.colors.YELLOW)
+        return selected
 
     def hunt_smb_credentials(self, target=None, shares=None, max_file_size=3_000_000,
-                             include_admin=False):
+                             include_admin=False, keep_all=False, interactive=True):
         """
         Durchsucht SMB-Shares rekursiv nach interessanten Dateien (Konfigs, Skripte,
-        Office-Dokumente, ...), lädt Treffer nach loot/<target>/<share>/... herunter
-        und scannt deren Inhalt nach Zugangsdaten-Mustern.
+        Office-Dokumente, ...). Jede Datei wird einzeln geladen, gescannt und -
+        sofern sie keine Credential-Muster enthält - sofort wieder gelöscht
+        (speicherschonend). Mit ``keep_all=True`` bleibt alles liegen.
 
-        target='all' durchsucht alle Hosts aus targets.txt. ``include_admin`` (bzw.
-        eine interaktive Rückfrage) bezieht administrative Shares (C$, F$, ADMIN$,
-        ...) mit ein - nützlich, wenn ein Host nur solche Laufwerks-Shares anbietet.
+        Shares können explizit via ``shares`` übergeben oder (ohne) interaktiv
+        ausgewählt werden. target='all' durchsucht jeden Host aus targets.txt;
+        ``include_admin`` bezieht administrative Shares (C$, F$, ADMIN$) mit ein.
         """
         if not self._check_adapter_exists("smbclient"):
             typer.echo("smbclient adapter not available")
@@ -734,7 +856,7 @@ class Engine:
                 typer.secho(f"\n=== Hunting creds on {t} ===", fg=typer.colors.CYAN, bold=True)
                 res = self.hunt_smb_credentials(
                     target=t, shares=shares, max_file_size=max_file_size,
-                    include_admin=include_admin)
+                    include_admin=include_admin, keep_all=keep_all, interactive=False)
                 summaries.append(f"[{t}]\n{res or '(nothing)'}")
             return "\n\n".join(summaries)
 
@@ -744,50 +866,43 @@ class Engine:
             return
 
         if not shares:
-            list_adapter = self.create_adapter("smbclient")
-            cmd = list_adapter.build_command(target=target, list_shares=True, auth=auth)
-            result = self._smb_raw_run(cmd, timeout=30)
-            share_entries = list_adapter.parse_share_entries(result.stdout) if result else []
-
-            # All disk shares except the IPC$ control pipe. Administrative shares end
-            # in '$' (ADMIN$, C$, F$, ...); with admin creds they often hold the most
-            # interesting files, so we don't discard them outright anymore.
-            disk = [s.name for s in share_entries
-                    if s.share_type == "Disk" and s.name.upper() != "IPC$"]
-            non_admin = [n for n in disk if not n.endswith("$")]
-            admin = [n for n in disk if n.endswith("$")]
-
-            shares = list(non_admin)
-            if include_admin:
-                shares += admin
-            elif not non_admin and admin:
-                typer.secho(
-                    f"No non-administrative shares found, but {len(admin)} "
-                    f"administrative share(s) are visible: {', '.join(admin)}",
-                    fg=typer.colors.YELLOW,
-                )
-                if typer.confirm(
-                        "Scan administrative shares? (needs admin rights; "
-                        "C$/drive shares can be large)", default=False):
-                    shares = list(admin)
+            non_admin, admin = self._discover_disk_shares(target, auth)
+            if interactive and (non_admin or admin) and sys.stdin.isatty():
+                shares = self._select_shares_interactive(target, non_admin, admin)
+            else:
+                shares = list(non_admin)
+                if include_admin:
+                    shares += admin
+                elif not non_admin and admin:
+                    typer.secho(
+                        f"No non-administrative shares found, but {len(admin)} "
+                        f"administrative share(s) are visible: {', '.join(admin)}",
+                        fg=typer.colors.YELLOW,
+                    )
+                    if sys.stdin.isatty() and typer.confirm(
+                            "Scan administrative shares? (needs admin rights; "
+                            "C$/drive shares can be large)", default=False):
+                        shares = list(admin)
 
         if not shares:
-            typer.echo("No accessible shares to scan.")
+            typer.echo("No shares selected / accessible to scan.")
             return
 
-        typer.echo(f"Scanning shares on {target}: {shares}")
+        typer.echo(f"Scanning shares on {target}: {shares} "
+                   f"({'keeping all files' if keep_all else 'deleting files without creds'})")
 
         loot_root = self._p("loot_dir") / target
         findings = []
         scanned = 0
         downloaded = 0
+        kept = 0
 
         for share in shares:
             ls_adapter = self.create_adapter("smbclient")
             cmd = ls_adapter.build_command(target=target, share=share, recursive=True, command="ls", auth=auth)
             result = self._smb_raw_run(cmd, timeout=90)
             if not result:
-                typer.echo(f"  [-] Could not list share {share}")
+                typer.echo(f"  {tui.status_tag(False)} Could not list share {share}")
                 continue
 
             for entry in ls_adapter.parse_entries(result.stdout):
@@ -816,13 +931,27 @@ class Engine:
                 if text:
                     matches = search_credentials(text)
 
-                findings.append({
-                    "share": share,
-                    "remote_path": entry.name,
-                    "local_path": str(local_path),
-                    "size": entry.size,
-                    "matches": matches,
-                })
+                # Memory-friendly: keep a file only if it has credential hits (or
+                # keep_all). Non-hits are deleted right after scanning so a big
+                # share doesn't fill the disk.
+                if matches or keep_all:
+                    kept += 1
+                    findings.append({
+                        "share": share,
+                        "remote_path": entry.name,
+                        "local_path": str(local_path),
+                        "size": entry.size,
+                        "matches": matches,
+                    })
+                else:
+                    try:
+                        local_path.unlink()
+                    except OSError:
+                        pass
+
+        # Tidy up any now-empty loot directories left by deleted files.
+        if not keep_all:
+            self._prune_empty_dirs(loot_root)
 
         if findings:
             self.write_data(CanonicalDataModel(
@@ -833,14 +962,31 @@ class Engine:
         hit_tag = tui.color(f"{len(hits_findings)} file(s) with credential-like content",
                             "green", "bold") if hits_findings else "0 with credential-like content"
         summary = (
-            f"Scanned {scanned} file(s), downloaded {downloaded} to {loot_root}, "
-            f"{hit_tag}."
+            f"Scanned {scanned} file(s), fetched {downloaded}, kept {kept} on disk "
+            f"({loot_root}), {hit_tag}."
         )
         if hits_findings:
             summary += "\n" + "\n".join(
                 f"  {tui.status_tag(True)} {f['local_path']}" for f in hits_findings)
         typer.echo(summary)
         return summary
+
+    @staticmethod
+    def _prune_empty_dirs(root):
+        """Remove empty directories under (and including) ``root``, best-effort."""
+        root = Path(root)
+        if not root.exists():
+            return
+        for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()  # only succeeds when empty
+                except OSError:
+                    pass
+        try:
+            root.rmdir()
+        except OSError:
+            pass
 
     def diff_shares(self, target=None):
         """
