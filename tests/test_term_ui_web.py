@@ -180,6 +180,9 @@ def test_build_share_matrix_merges_and_flags_diff():
     ]
     blocks, users = web._build_share_matrix(entries)
     assert [b["host"] for b in blocks] == ["10.0.0.5", "10.0.0.9"]
+    # every block exposes the keys the /shares route relies on
+    assert all({"host", "users", "count", "table_html"} <= set(b) for b in blocks)
+    assert blocks[0]["count"] == 2  # Pub + HR
     assert "list_shares" in users and "alice" in users and "bob" in users
     html = str(blocks[0]["table_html"])
     # HR differs (DENIED vs OK), Pub differs (file sets differ) -> both flagged

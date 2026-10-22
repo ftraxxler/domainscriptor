@@ -506,7 +506,8 @@ def _build_share_matrix(entries: list):
                 f"<td class='muted'>{_esc(meta.get('comment', ''))}</td></tr>")
         table = (f"<table class='matrix'><thead>{head}</thead>"
                  f"<tbody>{''.join(body_rows)}</tbody></table>")
-        blocks.append({"host": host, "users": col_users, "table_html": Markup(table)})
+        blocks.append({"host": host, "users": col_users,
+                       "count": len(body_rows), "table_html": Markup(table)})
 
     return blocks, all_users
 
@@ -654,7 +655,7 @@ def create_app(db_reader: DBReader) -> Flask:
     @app.route("/shares")
     def shares():
         blocks, users = _build_share_matrix(db_reader.fetch_all_raw())
-        share_count = sum(len(b["rows"]) for b in blocks)
+        share_count = sum(b["count"] for b in blocks)
         return render_template_string(
             _SHARES_TEMPLATE,
             active="shares",
