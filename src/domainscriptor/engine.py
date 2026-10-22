@@ -572,6 +572,11 @@ class Engine:
             return {"targets_file": str(targets_file)}, f"all targets ({targets_file.name})"
         return {"target": ip}, ip
 
+    def _excluded_shares(self):
+        """Set of upper-cased share names to skip, from config (tools.share_exclude)."""
+        raw = getattr(self.config.tools, "share_exclude", "") or ""
+        return {s.strip().upper() for s in raw.split(",") if s.strip()}
+
     def _read_target_list(self):
         """Hosts from targets.txt as a list (blank lines and '#' comments skipped)."""
         path = self._p("targets_file")
@@ -828,6 +833,13 @@ class Engine:
                     typer.echo(f"No shares found on {target}.")
             return None
 
+        excluded = self._excluded_shares()
+        shares = [s for s in shares if s.name.upper() not in excluded]
+        if not shares:
+            if not quiet:
+                typer.echo(f"All shares on {target} are excluded by config (share_exclude).")
+            return None
+
         rows = []
         for s in shares:
             access = "-"
@@ -917,8 +929,9 @@ class Engine:
         cmd = list_adapter.build_command(target=target, list_shares=True, auth=auth)
         result = self._smb_raw_run(cmd, timeout=30)
         entries = list_adapter.parse_share_entries(result.stdout) if result else []
+        excluded = self._excluded_shares() | {"IPC$"}
         disk = [s.name for s in entries
-                if s.share_type == "Disk" and s.name.upper() != "IPC$"]
+                if s.share_type == "Disk" and s.name.upper() not in excluded]
         non_admin = [n for n in disk if not n.endswith("$")]
         admin = [n for n in disk if n.endswith("$")]
         return non_admin, admin

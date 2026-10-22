@@ -1,7 +1,9 @@
+import ipaddress
 import json
 import logging
 import math
 import threading
+from collections import defaultdict
 from urllib.parse import urlencode
 
 from flask import Flask, request, render_template_string
@@ -29,15 +31,7 @@ _PROTOCOL_COLORS = {
     "SMB-LOOT":   "danger",
 }
 
-_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="de" data-bs-theme="dark">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DomainScriptor</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
+_CSS = """
     body { background: #0d1117; font-size: .9rem; }
     .navbar  { background: #161b22 !important; border-bottom: 1px solid #30363d; }
     .brand   { font-family: monospace; font-size: 1.1rem; letter-spacing: 1px; color: #e6edf3; }
@@ -68,6 +62,12 @@ _TEMPLATE = """
     .page-item.disabled .page-link { background: #161b22; color: #484f58; }
     .stat-pill { background: #161b22; border: 1px solid #30363d; border-radius: 2rem;
                  padding: .2rem .75rem; font-size: .78rem; color: #8b949e; }
+    /* Tab navigation */
+    .nav-tabs-ds { display: flex; gap: .4rem; }
+    .nav-tabs-ds a { color: #8b949e; text-decoration: none; padding: .3rem .85rem;
+                     border-radius: .4rem; font-size: .85rem; }
+    .nav-tabs-ds a:hover { color: #e6edf3; background: #1c2128; }
+    .nav-tabs-ds a.active { background: #1f6feb; color: #fff; }
     /* Readable rendering of a row's data entries */
     .dtable { width: 100%; font-size: .78rem; border-collapse: collapse; margin-top: .25rem; }
     .dtable th { color: #8b949e; text-transform: uppercase; font-size: .68rem;
@@ -85,17 +85,48 @@ _TEMPLATE = """
     .tag-hit  { background: rgba(248,81,73,.22);   color: #ff7b72; }
     .tag-dim  { background: #21262d; color: #8b949e; }
     .snip { font-family: monospace; color: #ffa657; font-size: .72rem; word-break: break-all; }
-  </style>
-</head>
-<body>
+    /* Shares matrix */
+    .host-block { margin-bottom: 1.75rem; }
+    .host-block h3 { color: #e6edf3; font-size: 1rem; margin: .4rem 0; font-family: monospace; }
+    .matrix { width: 100%; border-collapse: collapse; font-size: .8rem; }
+    .matrix th, .matrix td { padding: .3rem .6rem; border-bottom: 1px solid #21262d;
+                             text-align: left; white-space: nowrap; }
+    .matrix thead th { color: #8b949e; text-transform: uppercase; font-size: .68rem;
+                       border-bottom: 1px solid #30363d; }
+    .matrix td.share { font-family: monospace; color: #79c0ff; }
+    .matrix tr.differs { background: rgba(210,153,34,.08); }
+    .matrix td.hi, .matrix th.hi { background: rgba(88,166,255,.14); }
+    .muted { color: #8b949e; }
+    .filecount { color: #8b949e; font-size: .7rem; }
+"""
 
+_NAVBAR = """
 <nav class="navbar navbar-dark mb-3">
   <div class="container-fluid">
-    <span class="brand">⌬ DomainScriptor</span>
-    <span class="stat-pill">{{ total }} Einträge</span>
+    <span class="brand me-3">⌬ DomainScriptor</span>
+    <div class="nav-tabs-ds me-auto">
+      <a href="/" class="{% if active == 'data' %}active{% endif %}">Übersicht</a>
+      <a href="/shares" class="{% if active == 'shares' %}active{% endif %}">Shares</a>
+    </div>
+    {{ nav_extra | safe }}
   </div>
 </nav>
+"""
 
+_HEAD = """
+<!DOCTYPE html>
+<html lang="de" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DomainScriptor</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>""" + _CSS + """</style>
+</head>
+<body>
+""" + _NAVBAR
+
+_TEMPLATE = _HEAD + """
 <div class="container-fluid px-4">
 
   <form method="get" class="filter-bar mb-3">
@@ -361,6 +392,206 @@ def _render_data(protocol: str, data: list) -> Markup:
     return Markup("")
 
 
+def _share_host_key(host):
+    try:
+        return (0, int(ipaddress.ip_address(host)))
+    except ValueError:
+        return (1, host)
+
+
+_MATRIX_ACCESS_TAG = {
+    "READ,WRITE": "tag-rw", "READ": "tag-ok", "OK": "tag-ok",
+    "NO ACCESS": "tag-deny", "DENIED": "tag-deny", "ERROR": "tag-dim",
+}
+
+
+def _matrix_cell(info) -> str:
+    if not info:
+        return "<span class='tag tag-dim'>—</span>"
+    acc = str(info.get("access") or "").strip()
+    cls = _MATRIX_ACCESS_TAG.get(acc, "tag-dim")
+    badge = f"<span class='tag {cls}'>{_esc(acc or '—')}</span>"
+    if info.get("count") is not None:
+        badge += f" <span class='filecount'>{info['count']} Dateien</span>"
+    return badge
+
+
+def _build_share_matrix(entries: list):
+    """Build per-host share/user access matrices from SMB-DIFF (multi-user) and
+    SMB-SHARES (list_shares, single default user) entries.
+
+    Returns (blocks, all_users) where each block has the host, its column users
+    and a ready-to-drop-in HTML table (with data-* hooks for client-side search,
+    user highlighting and a differences-only filter).
+    """
+    diff_latest, shares_latest = {}, {}
+    for e in entries:
+        proto = str(e.get("protocol", "")).upper()
+        host = e.get("ip_hostname") or "(unknown)"
+        ts = e.get("timestamp") or ""
+        if proto == "SMB-DIFF":
+            if host not in diff_latest or ts >= diff_latest[host][0]:
+                diff_latest[host] = (ts, e.get("data") or [])
+        elif proto == "SMB-SHARES":
+            if host not in shares_latest or ts >= shares_latest[host][0]:
+                shares_latest[host] = (ts, e.get("data") or [])
+
+    hosts = sorted(set(diff_latest) | set(shares_latest), key=_share_host_key)
+    all_users: list = []
+    blocks = []
+
+    for host in hosts:
+        col_users: list = []
+        share_meta: dict = {}
+        cells: dict = defaultdict(dict)
+
+        for d in diff_latest.get(host, (None, []))[1]:
+            if not isinstance(d, dict):
+                continue
+            user = d.get("user", "?")
+            if user not in col_users:
+                col_users.append(user)
+            for sh, info in (d.get("shares") or {}).items():
+                if not isinstance(info, dict):
+                    continue
+                acc = info.get("access", "")
+                label = "READ" if acc == "OK" else acc
+                files = info.get("files") or []
+                cells[sh][user] = {"access": label, "count": len(files), "files": files}
+                share_meta.setdefault(sh, {"type": "", "comment": ""})
+
+        for s in shares_latest.get(host, (None, []))[1]:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("name")
+            if not name:
+                continue
+            user = "list_shares"
+            if user not in col_users:
+                col_users.append(user)
+            cells[name][user] = {"access": s.get("access", ""), "count": None, "files": None}
+            meta = share_meta.setdefault(name, {"type": "", "comment": ""})
+            if s.get("share_type"):
+                meta["type"] = s.get("share_type")
+            if s.get("comment"):
+                meta["comment"] = s.get("comment")
+
+        for u in col_users:
+            if u not in all_users:
+                all_users.append(u)
+
+        # Build the table HTML.
+        head = ("<tr><th>Share</th><th>Typ</th>"
+                + "".join(f"<th class='ucol' data-user=\"{_esc(u)}\">{_esc(u)}</th>"
+                          for u in col_users)
+                + "<th>Kommentar</th></tr>")
+        body_rows = []
+        for sh in sorted(cells.keys()):
+            per = cells[sh]
+            accesses = {c["access"] for c in per.values() if c.get("access")}
+            filesets = [set(c["files"]) for c in per.values() if c.get("files") is not None]
+            differs = len(accesses) > 1 or any(fs != filesets[0] for fs in filesets[1:])
+            meta = share_meta.get(sh, {"type": "", "comment": ""})
+            admin = " <span class='tag tag-adm'>admin</span>" if str(sh).endswith("$") else ""
+            ucells = "".join(
+                f"<td class='ucell' data-user=\"{_esc(u)}\">{_matrix_cell(per.get(u))}</td>"
+                for u in col_users)
+            body_rows.append(
+                f"<tr class='srow{' differs' if differs else ''}' "
+                f"data-search=\"{_esc((host + ' ' + str(sh)).lower())}\" "
+                f"data-differs=\"{1 if differs else 0}\">"
+                f"<td class='share'>{_esc(sh)}{admin}</td>"
+                f"<td class='muted'>{_esc(meta.get('type', ''))}</td>"
+                f"{ucells}"
+                f"<td class='muted'>{_esc(meta.get('comment', ''))}</td></tr>")
+        table = (f"<table class='matrix'><thead>{head}</thead>"
+                 f"<tbody>{''.join(body_rows)}</tbody></table>")
+        blocks.append({"host": host, "users": col_users, "table_html": Markup(table)})
+
+    return blocks, all_users
+
+
+_SHARES_TEMPLATE = _HEAD + """
+<div class="container-fluid px-4">
+
+  <div class="filter-bar mb-3">
+    <div class="row g-2 align-items-center">
+      <div class="col-md-4">
+        <input type="text" id="shareSearch" class="form-control form-control-sm"
+               placeholder="Suche Host / Share …">
+      </div>
+      <div class="col-md-3">
+        <select id="userSelect" class="form-select form-select-sm">
+          <option value="">Alle User hervorheben…</option>
+          {% for u in users %}<option value="{{ u }}">{{ u }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-auto form-check ms-2">
+        <input class="form-check-input" type="checkbox" id="diffOnly">
+        <label class="form-check-label muted" for="diffOnly">Nur Unterschiede</label>
+      </div>
+    </div>
+  </div>
+
+  {% if not blocks %}
+  <p class="text-center text-secondary py-5">
+    Keine Share-Daten. Führe <code>shortcuts list_shares</code> oder
+    <code>shortcuts diff_shares</code> aus.
+  </p>
+  {% endif %}
+
+  {% for b in blocks %}
+  <div class="host-block" data-host="{{ b.host }}">
+    <h3>⌬ {{ b.host }} <span class="muted" style="font-size:.78rem">
+        · {{ b.users | length }} User</span></h3>
+    <div class="table-responsive">{{ b.table_html }}</div>
+  </div>
+  {% endfor %}
+
+</div>
+
+<script>
+(function () {
+  const search = document.getElementById('shareSearch');
+  const diffOnly = document.getElementById('diffOnly');
+  const userSel = document.getElementById('userSelect');
+
+  function apply() {
+    const q = (search.value || '').toLowerCase().trim();
+    const only = diffOnly.checked;
+    document.querySelectorAll('.host-block').forEach(block => {
+      let visible = 0;
+      block.querySelectorAll('tr.srow').forEach(row => {
+        const okSearch = !q || (row.dataset.search || '').indexOf(q) !== -1;
+        const okDiff = !only || row.dataset.differs === '1';
+        const show = okSearch && okDiff;
+        row.style.display = show ? '' : 'none';
+        if (show) visible++;
+      });
+      block.style.display = visible ? '' : 'none';
+    });
+  }
+
+  function highlight() {
+    const u = userSel.value;
+    document.querySelectorAll('.ucell.hi, .ucol.hi').forEach(el => el.classList.remove('hi'));
+    if (u) {
+      document.querySelectorAll('[data-user="' + (window.CSS && CSS.escape ? CSS.escape(u) : u) + '"]')
+        .forEach(el => el.classList.add('hi'));
+    }
+  }
+
+  search.addEventListener('input', apply);
+  diffOnly.addEventListener('change', apply);
+  userSel.addEventListener('change', highlight);
+})();
+</script>
+
+</body>
+</html>
+"""
+
+
 def create_app(db_reader: DBReader) -> Flask:
     app = Flask(__name__)
 
@@ -407,6 +638,8 @@ def create_app(db_reader: DBReader) -> Flask:
 
         return render_template_string(
             _TEMPLATE,
+            active="data",
+            nav_extra=Markup(f'<span class="stat-pill">{total} Einträge</span>'),
             rows=rows,
             protocols=protocols,
             tools=tools,
@@ -416,6 +649,19 @@ def create_app(db_reader: DBReader) -> Flask:
             total_pages=total_pages,
             page_range=_page_range(page, total_pages),
             qs=qs,
+        )
+
+    @app.route("/shares")
+    def shares():
+        blocks, users = _build_share_matrix(db_reader.fetch_all_raw())
+        share_count = sum(len(b["rows"]) for b in blocks)
+        return render_template_string(
+            _SHARES_TEMPLATE,
+            active="shares",
+            nav_extra=Markup(f'<span class="stat-pill">{len(blocks)} Hosts · '
+                             f'{share_count} Shares</span>'),
+            blocks=blocks,
+            users=users,
         )
 
     return app

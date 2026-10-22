@@ -153,6 +153,53 @@ def test_report_includes_share_section():
     assert "Zugriffsrechte" in html and "acc-rw" in html
 
 
+def test_excluded_shares_from_config():
+    from domainscriptor.config import get_config
+    eng = _bare_engine()
+    eng.config = get_config()
+    excl = eng._excluded_shares()
+    assert "IPC$" in excl
+    # comma-separated, case-insensitive
+    eng.config.tools.share_exclude = "ipc$, print$ ,NETLOGON"
+    assert eng._excluded_shares() == {"IPC$", "PRINT$", "NETLOGON"}
+
+
+def test_build_share_matrix_merges_and_flags_diff():
+    entries = [
+        {"protocol": "SMB-DIFF", "ip_hostname": "10.0.0.5", "timestamp": "2026-10-22T09:00",
+         "data": [
+             {"user": "alice", "shares": {"Pub": {"access": "OK", "files": ["a", "b"]},
+                                          "HR": {"access": "DENIED", "files": []}}},
+             {"user": "bob", "shares": {"Pub": {"access": "OK", "files": ["a"]},
+                                        "HR": {"access": "OK", "files": ["x"]}}},
+         ]},
+        {"protocol": "SMB-SHARES", "ip_hostname": "10.0.0.5", "timestamp": "2026-10-22T10:00",
+         "data": [{"name": "Pub", "share_type": "Disk", "access": "READ,WRITE", "comment": "p"}]},
+        {"protocol": "SMB-SHARES", "ip_hostname": "10.0.0.9", "timestamp": "2026-10-22T10:00",
+         "data": [{"name": "C$", "share_type": "Disk", "access": "READ", "comment": ""}]},
+    ]
+    blocks, users = web._build_share_matrix(entries)
+    assert [b["host"] for b in blocks] == ["10.0.0.5", "10.0.0.9"]
+    assert "list_shares" in users and "alice" in users and "bob" in users
+    html = str(blocks[0]["table_html"])
+    # HR differs (DENIED vs OK), Pub differs (file sets differ) -> both flagged
+    assert html.count("srow differs") == 2
+    assert "data-user=\"alice\"" in html
+
+
+def test_build_share_matrix_empty():
+    blocks, users = web._build_share_matrix([])
+    assert blocks == [] and users == []
+
+
+def test_matrix_cell_variants():
+    assert "tag-dim" in web._matrix_cell(None)
+    assert "tag-rw" in web._matrix_cell({"access": "READ,WRITE", "count": None})
+    cell = web._matrix_cell({"access": "READ", "count": 3})
+    assert "tag-ok" in cell and "3 Dateien" in cell
+    assert "tag-deny" in web._matrix_cell({"access": "DENIED", "count": 0})
+
+
 def test_prune_empty_dirs(tmp_path):
     nested = tmp_path / "loot" / "share" / "sub"
     nested.mkdir(parents=True)

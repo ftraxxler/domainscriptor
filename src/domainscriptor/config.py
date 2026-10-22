@@ -61,6 +61,8 @@ class ToolsConfig:
     detach_key: str = "ctrl-g"
     # Pager for long command output (mouse-wheel scrollback). Empty = no pager.
     pager: str = "less -R"
+    # Shares to skip in list_shares / hunt_creds (comma-separated, case-insensitive).
+    share_exclude: str = "IPC$"
 
 
 @dataclass
@@ -220,6 +222,7 @@ responder_log   = "/usr/share/responder/logs/Responder-Session.log"
 default_timeout = 300
 detach_key      = "ctrl-g"          # key to detach a running job (not Ctrl-Z!)
 pager           = "less -R"         # pager for long output ("" to disable)
+share_exclude   = "IPC$"            # shares to skip in list_shares/hunt_creds (comma-sep)
 """
 
 

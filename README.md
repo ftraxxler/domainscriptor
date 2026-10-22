@@ -24,7 +24,7 @@ DomainScriptor is offensive security tooling for Active Directory assessments. U
 - **Prioritized findings view** plus report export to Markdown, HTML, or JSON (optionally with AI analysis).
 - **AI assistant** (OpenRouter / Anthropic / OpenAI) for concrete next-step suggestions and vulnerability analysis of collected findings.
 - **Guided check sequences** — full SMB (11 checks) and LDAP (10 checks) security sweeps, SMB credential hunting, share-visibility diffing, and BloodHound collection.
-- **Web UI** for browsing collected data.
+- **Web UI** for browsing collected data, with a dedicated **Shares** tab: a searchable per-host share/user access matrix (combining `list_shares` and `diff_shares`) where you can switch/highlight users and filter to only the shares whose access or file visibility differs between users.
 
 ---
 
@@ -179,7 +179,11 @@ responder_log   = "/usr/share/responder/logs/Responder-Session.log"
 default_timeout = 300
 detach_key      = "ctrl-g"          # key to detach a running job into the background (not Ctrl-Z)
 pager           = "less -R"         # pager for long output / mouse-wheel scrollback ("" to disable)
+share_exclude   = "IPC$"            # shares to skip in list_shares/hunt_creds (comma-separated, case-insensitive)
 ```
+
+> **Excluding shares:** `share_exclude` (e.g. `"IPC$, print$, NETLOGON"`) drops those
+> shares from `list_shares` and `hunt_creds` before anything is listed or scanned.
 
 > **Detaching a running job:** while a foreground command streams its output, press
 > the configured `detach_key` (default **Ctrl-G**) to send it to the background and
