@@ -150,7 +150,7 @@ class Adapter(ABC):
                 runner.run_async(self.executable, cmd, self.watcher, queue)
                 return None
 
-            # Background (detached) and attach (foreground, Ctrl-Z detaches) both
+            # Background (detached) and attach (foreground, detach key detaches) both
             # run as managed jobs; results are parsed and persisted on completion.
             if background or attach:
                 def _on_complete(output: str):
@@ -180,7 +180,7 @@ class Adapter(ABC):
                     typer.secho(msg, fg=typer.colors.GREEN)
                     return None
 
-                # attach: stream output; Ctrl-Z detaches and returns to the prompt
+                # attach: stream output; the detach key detaches and returns to the prompt
                 detached = runner.follow(job_name, timeout=timeout)
                 if detached:
                     typer.secho(

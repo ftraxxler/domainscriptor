@@ -17,6 +17,7 @@ from .cli_completioner import (
     MainCompleter, RuncommandCompleter, StopProcessCompleter, JobNameCompleter,
 )
 from .logging_setup import get_logger, log_command
+from .term_ui import page_output
 
 info = project_info()
 
@@ -150,7 +151,8 @@ def start():
                       "hosts": None, "findings": None, "creds": None},
             "settings": {"add": None, "delete": None, "default": None},
             "shortcuts": {"get_relayable": None, "get_dc": None, "smb_check": None, "ldap_check": None,
-                          "hunt_creds": None, "diff_shares": None, "collect_ad": None},
+                          "list_shares": None, "hunt_creds": None, "diff_shares": None,
+                          "collect_ad": None},
             "targets": None,
             "relayable": None,
             "ai": {"suggest": None, "analyze": None},
@@ -242,8 +244,8 @@ def run_command(command: str, ctx: typer.Context):
     if bg_kw is not None:
         background = str(bg_kw).strip().lower() in ("1", "true", "yes", "y", "on")
 
-    # Interactive foreground runs attach so the user can press Ctrl-Z to send the
-    # command to the background and keep working.
+    # Interactive foreground runs attach so the user can press the detach key
+    # (default Ctrl-G) to send the command to the background and keep working.
     eng.run_task(command, background=background, attach=not background, **kwargs)
 
 
@@ -260,7 +262,7 @@ def show_output(ctx: typer.Context, name: str,
 @argument_handler.command("reattach")
 def reattach(ctx: typer.Context, name: str):
     """
-    Re-attach to a running background job: stream its output live again (Ctrl-Z
+    Re-attach to a running background job: stream its output live again (detach key
     detaches once more). If the job already finished, its full log is shown.
     """
     eng: Engine = ctx.obj
@@ -276,23 +278,23 @@ def fetch(ctx: typer.Context,
     """
     eng: Engine = ctx.obj
     if field is None:
-        typer.echo(eng.read_data())
+        page_output(eng.read_data())
     elif field == "hosts":
-        typer.echo(eng.get_hosts_report())
+        page_output(eng.get_hosts_report())
     elif field == "findings":
         # optionaler value = Severity-Filter (info|low|medium|high|critical)
-        typer.echo(eng.get_findings_report(severity=value or ""))
+        page_output(eng.get_findings_report(severity=value or ""))
     elif field == "creds":
-        typer.echo(eng.get_credentials_report())
+        page_output(eng.get_credentials_report())
     elif value:
         if field == "byIp":
-            typer.echo(eng.read_data_ip(value))
+            page_output(eng.read_data_ip(value))
         elif field == "byProtocol":
-            typer.echo(eng.read_data_protocol(value))
+            page_output(eng.read_data_protocol(value))
         elif field == "byToolname":
-            typer.echo(eng.read_data_tool(value))
+            page_output(eng.read_data_tool(value))
         elif field == "search":
-            typer.echo(eng.search_data(value))
+            page_output(eng.search_data(value))
         else:
             typer.echo("Invalid field or value not specified")
     else:
@@ -339,7 +341,7 @@ def settings(
 @argument_handler.command(context_settings={"allow_extra_args": True})
 def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     ...,
-    help="get_dc | get_relayable | smb_check | ldap_check | hunt_creds | diff_shares | collect_ad"),
+    help="get_dc | get_relayable | smb_check | ldap_check | list_shares | hunt_creds | diff_shares | collect_ad"),
               proxy: Optional[str] = typer.Argument(
                   False,
                   help="Set to use a relay/proxychains for authenticated checks"
@@ -361,12 +363,15 @@ def shortcuts(ctx: typer.Context, field: str = typer.Argument(
     elif field == "ldap_check":
         typer.echo("Checking ldap security")
         typer.echo(eng.check_ldap_security(proxy=proxy))
+    elif field == "list_shares":
+        typer.echo("Listing SMB shares")
+        page_output(eng.list_shares())
     elif field == "hunt_creds":
         typer.echo("Hunting for credential-bearing documents on SMB shares")
-        typer.echo(eng.hunt_smb_credentials())
+        page_output(eng.hunt_smb_credentials())
     elif field == "diff_shares":
         typer.echo("Comparing share/file visibility across saved users")
-        typer.echo(eng.diff_shares())
+        page_output(eng.diff_shares())
     elif field == "collect_ad":
         eng.collect_bloodhound()
     else:

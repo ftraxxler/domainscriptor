@@ -177,7 +177,18 @@ model    = ""                 # empty = provider default
 [tools]
 responder_log   = "/usr/share/responder/logs/Responder-Session.log"
 default_timeout = 300
+detach_key      = "ctrl-g"          # key to detach a running job into the background (not Ctrl-Z)
+pager           = "less -R"         # pager for long output / mouse-wheel scrollback ("" to disable)
 ```
+
+> **Detaching a running job:** while a foreground command streams its output, press
+> the configured `detach_key` (default **Ctrl-G**) to send it to the background and
+> return to the prompt (`reattach <job>` to attach again). Ctrl-Z is intentionally
+> *not* used so it stays free for shell job control and tmux/screen prefixes.
+>
+> **Scrolling long output:** `fetch`, `showoutput` and the share/loot/diff shortcuts
+> pipe large output through the pager, so you can scroll with the mouse wheel and
+> search it. Set `pager = ""` to disable.
 
 > Priority order: defaults < TOML file < environment variables.
 > Because DomainScriptor escalates to root via `sudo`, the project-local
@@ -267,8 +278,9 @@ Predefined command sequences for common checks.
 | `shortcuts get_dc` | Find domain controllers → `dc_ips.txt` (via nxc or nslookup fallback) |
 | `shortcuts smb_check [proxy]` | Full SMB security check (11 checks). At the IP prompt you can enter `all` to test every target in `targets.txt` |
 | `shortcuts ldap_check [proxy]` | Full LDAP security check (10 checks). At the IP prompt you can enter `all` to test every target in `targets.txt` |
-| `shortcuts hunt_creds` | Search SMB shares for credential-bearing files and download them |
-| `shortcuts diff_shares` | Compare share/file visibility between stored users |
+| `shortcuts list_shares` | List a host's SMB shares (colored, readable) and store them as a dedicated `SMB-SHARES` entry. At the prompt enter `all` for every target in `targets.txt` |
+| `shortcuts hunt_creds` | Search SMB shares for credential-bearing files and download them. If only administrative shares (`C$`, `F$`, `ADMIN$`, ...) are visible it offers to scan those too. At the prompt enter `all` for every target in `targets.txt` |
+| `shortcuts diff_shares` | Compare share/file visibility between stored users. At the prompt enter `all` for every target in `targets.txt` |
 | `shortcuts collect_ad` | Collect AD data via bloodhound-ce-python (computers, users, groups, GPOs, ...) |
 
 `smb_check` and `ldap_check` run the checks structured with headers:

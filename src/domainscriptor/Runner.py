@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -11,6 +10,8 @@ import typer
 from domainscriptor.adapters_registry.adapters.watcher.NTLMRelayWatcher import NTLMRelayWatcher
 from domainscriptor.adapters_registry.adapters.watcher.ResponderWatcher import ResponderLogWatcher
 from domainscriptor.logging_setup import redact_command
+from domainscriptor.config import get_config
+from domainscriptor.term_ui import DetachKeyReader, key_display, parse_key_spec
 
 JobType = Literal["process", "thread"]
 
@@ -169,7 +170,7 @@ class Runner:
     def follow(self, job_name: str, timeout: Optional[float] = None) -> bool:
         """Stream a job's output to the console by tailing its logfile: first the
         output captured so far, then new output live, until the job finishes or the
-        user presses Ctrl-Z (SIGTSTP) to detach. Works both for the initial
+        user presses the detach key (default Ctrl-G) to detach. Works both for the initial
         foreground run and for re-attaching later.
 
         Returns True if detached while still running, False if it finished (or no
@@ -196,17 +197,14 @@ class Runner:
                         fg=typer.colors.YELLOW)
             return False
 
-        detached = {"flag": False}
+        detach_spec = get_config().tools.detach_key
+        typer.secho(
+            f"[{job_name}] streaming live — press {key_display(detach_spec)} "
+            f"to detach into the background.",
+            fg=typer.colors.CYAN,
+        )
 
-        def _on_tstp(signum, frame):
-            detached["flag"] = True
-
-        prev_handler = None
-        try:
-            prev_handler = signal.signal(signal.SIGTSTP, _on_tstp)
-        except (ValueError, OSError, AttributeError):
-            prev_handler = None  # not main thread / unsupported platform
-
+        detached = False
         f = None
         try:
             for _ in range(200):  # wait briefly for the logfile to appear
@@ -219,38 +217,35 @@ class Runner:
                 f = None
 
             deadline = (time.time() + timeout) if timeout else None
-            while True:
-                if f:
-                    chunk = f.read()
-                    if chunk:
-                        typer.echo(chunk, nl=False)
-                if detached["flag"]:
-                    break
-                if proc.poll() is not None:
-                    if f:  # drain whatever was written at the very end
-                        time.sleep(0.05)
+            with DetachKeyReader(parse_key_spec(detach_spec)) as keys:
+                while True:
+                    if f:
                         chunk = f.read()
                         if chunk:
                             typer.echo(chunk, nl=False)
-                    break
-                if deadline and time.time() > deadline:
-                    typer.secho(
-                        f"\n[{job_name}] follow timeout after {timeout}s "
-                        f"(job keeps running; see 'showoutput {job_name}')",
-                        fg=typer.colors.YELLOW,
-                    )
-                    break
-                time.sleep(0.1)
+                    if keys.pressed():
+                        detached = True
+                        break
+                    if proc.poll() is not None:
+                        if f:  # drain whatever was written at the very end
+                            time.sleep(0.05)
+                            chunk = f.read()
+                            if chunk:
+                                typer.echo(chunk, nl=False)
+                        break
+                    if deadline and time.time() > deadline:
+                        typer.secho(
+                            f"\n[{job_name}] follow timeout after {timeout}s "
+                            f"(job keeps running; see 'showoutput {job_name}')",
+                            fg=typer.colors.YELLOW,
+                        )
+                        break
+                    time.sleep(0.1)
         finally:
             if f:
                 f.close()
-            if prev_handler is not None:
-                try:
-                    signal.signal(signal.SIGTSTP, prev_handler)
-                except (ValueError, OSError):
-                    pass
 
-        return detached["flag"] and proc.poll() is None
+        return detached and proc.poll() is None
 
     def read_output(self, job_name: str, max_lines: int = 40) -> Optional[str]:
         """Return the last ``max_lines`` of a background job's captured output."""

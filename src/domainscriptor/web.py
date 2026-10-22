@@ -5,6 +5,7 @@ import threading
 from urllib.parse import urlencode
 
 from flask import Flask, request, render_template_string
+from markupsafe import Markup, escape
 
 from domainscriptor.data.db_reader import DBReader
 
@@ -12,15 +13,20 @@ from domainscriptor.data.db_reader import DBReader
 _PER_PAGE = 30
 
 _PROTOCOL_COLORS = {
-    "SMB":    "danger",
-    "LDAP":   "primary",
-    "TCP":    "success",
-    "UDP":    "warning",
-    "NTLMV2": "danger",
-    "LLMNR":  "info",
-    "MDNS":   "info",
-    "NB-NTS": "info",
-    "SRV":    "secondary",
+    "SMB":        "danger",
+    "LDAP":       "primary",
+    "TCP":        "success",
+    "UDP":        "warning",
+    "NTLMV2":     "danger",
+    "LLMNR":      "info",
+    "MDNS":       "info",
+    "NB-NTS":     "info",
+    "SRV":        "secondary",
+    # Shortcut/tool protocols — each gets its own badge so they stand out as a
+    # distinct "tool" in the UI (like SMB-DIFF already did).
+    "SMB-SHARES": "info",
+    "SMB-DIFF":   "warning",
+    "SMB-LOOT":   "danger",
 }
 
 _TEMPLATE = """
@@ -62,6 +68,22 @@ _TEMPLATE = """
     .page-item.disabled .page-link { background: #161b22; color: #484f58; }
     .stat-pill { background: #161b22; border: 1px solid #30363d; border-radius: 2rem;
                  padding: .2rem .75rem; font-size: .78rem; color: #8b949e; }
+    /* Readable rendering of a row's data entries */
+    .dtable { width: 100%; font-size: .78rem; border-collapse: collapse; margin-top: .25rem; }
+    .dtable th { color: #8b949e; text-transform: uppercase; font-size: .68rem;
+                 letter-spacing: .04em; text-align: left; padding: .2rem .5rem;
+                 border-bottom: 1px solid #30363d; font-weight: 600; }
+    .dtable td { color: #c9d1d9; padding: .2rem .5rem; border-bottom: 1px solid #21262d;
+                 vertical-align: top; }
+    .dtable td.mono, .dtable code { font-family: monospace; color: #79c0ff; }
+    .tag { display: inline-block; padding: .05rem .4rem; border-radius: .3rem;
+           font-size: .68rem; font-weight: 600; }
+    .tag-ok   { background: rgba(63,185,80,.18);  color: #3fb950; }
+    .tag-deny { background: rgba(248,81,73,.18);   color: #f85149; }
+    .tag-adm  { background: rgba(210,153,34,.18);  color: #d29922; }
+    .tag-hit  { background: rgba(248,81,73,.22);   color: #ff7b72; }
+    .tag-dim  { background: #21262d; color: #8b949e; }
+    .snip { font-family: monospace; color: #ffa657; font-size: .72rem; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -141,7 +163,13 @@ _TEMPLATE = """
               {{ row.data_entries }} {{ "Eintrag" if row.data_entries == 1 else "Einträge" }} anzeigen
             </a>
             <div class="collapse mt-1" id="d{{ row.id }}">
-              <div class="data-full">{{ row.data_full }}</div>
+              {{ row.data_html }}
+              <a class="toggle-link d-inline-block mt-1" data-bs-toggle="collapse" href="#j{{ row.id }}">
+                Rohdaten (JSON)
+              </a>
+              <div class="collapse" id="j{{ row.id }}">
+                <div class="data-full">{{ row.data_full }}</div>
+              </div>
             </div>
             {% endif %}
           </td>
@@ -202,11 +230,115 @@ def _data_preview(data: list, max_len: int = 90) -> str:
         return ""
     try:
         first = data[0]
-        parts = [str(v) for v in first.values() if v is not None and str(v).strip()]
+        parts = [str(v) for v in first.values()
+                 if v is not None and str(v).strip() and not isinstance(v, (dict, list))]
         preview = "  ·  ".join(parts)
         return (preview[:max_len] + "…") if len(preview) > max_len else preview
     except Exception:
         return ""
+
+
+def _esc(v) -> str:
+    return str(escape("" if v is None else str(v)))
+
+
+def _render_shares(data: list) -> str:
+    rows = []
+    for s in data:
+        admin = str(s.get("name", "")).endswith("$")
+        tag = " <span class='tag tag-adm'>admin</span>" if admin else ""
+        rows.append(
+            f"<tr><td class='mono'>{_esc(s.get('name'))}{tag}</td>"
+            f"<td>{_esc(s.get('share_type'))}</td>"
+            f"<td>{_esc(s.get('comment'))}</td></tr>")
+    return ("<table class='dtable'><thead><tr><th>Share</th><th>Type</th>"
+            f"<th>Comment</th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
+
+
+def _render_loot(data: list) -> str:
+    rows = []
+    for f in data:
+        matches = f.get("matches") or []
+        if matches:
+            pats = ", ".join(sorted({m.get("pattern", "") for m in matches}))
+            mcell = (f"<span class='tag tag-hit'>{len(matches)} hit(s)</span> "
+                     f"<span class='snip'>{_esc(pats)}</span>")
+        else:
+            mcell = "<span class='tag tag-dim'>—</span>"
+        rows.append(
+            f"<tr><td>{_esc(f.get('share'))}</td>"
+            f"<td class='mono'>{_esc(f.get('remote_path'))}</td>"
+            f"<td>{_esc(f.get('size'))}</td><td>{mcell}</td></tr>")
+    return ("<table class='dtable'><thead><tr><th>Share</th><th>File</th>"
+            f"<th>Size</th><th>Credentials</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>")
+
+
+def _render_diff(data: list) -> str:
+    users = [d.get("user", "") for d in data]
+    all_shares = sorted({sh for d in data for sh in (d.get("shares") or {})})
+    head = "".join(f"<th>{_esc(u)}</th>" for u in users)
+    body = []
+    for sh in all_shares:
+        cells = [f"<td class='mono'>{_esc(sh)}</td>"]
+        for d in data:
+            info = (d.get("shares") or {}).get(sh)
+            if not info:
+                cells.append("<td><span class='tag tag-dim'>—</span></td>")
+            elif info.get("access") == "OK":
+                n = len(info.get("files") or [])
+                cells.append(f"<td><span class='tag tag-ok'>OK ({n})</span></td>")
+            else:
+                cells.append(f"<td><span class='tag tag-deny'>{_esc(info.get('access'))}</span></td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    return (f"<table class='dtable'><thead><tr><th>Share</th>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table>")
+
+
+def _render_generic(data: list):
+    """Flat list-of-dicts → a compact table; returns None if the shape doesn't fit."""
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    keys: list = []
+    for d in data:
+        if not isinstance(d, dict):
+            return None
+        for k in d.keys():
+            if k not in keys:
+                keys.append(k)
+    keys = keys[:8]
+    head = "".join(f"<th>{_esc(k)}</th>" for k in keys)
+    rows = []
+    for d in data[:200]:
+        cells = []
+        for k in keys:
+            v = d.get(k)
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+            cells.append(f"<td>{_esc(v)}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return (f"<table class='dtable'><thead><tr>{head}</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>")
+
+
+def _render_data(protocol: str, data: list) -> Markup:
+    """Readable HTML for a row's data; template keeps a JSON fallback regardless."""
+    try:
+        if not data:
+            return Markup("")
+        proto = (protocol or "").upper()
+        if proto == "SMB-SHARES":
+            return Markup(_render_shares(data))
+        if proto == "SMB-LOOT":
+            return Markup(_render_loot(data))
+        if proto == "SMB-DIFF":
+            return Markup(_render_diff(data))
+        generic = _render_generic(data)
+        if generic:
+            return Markup(generic)
+    except Exception:
+        pass
+    return Markup("")
 
 
 def create_app(db_reader: DBReader) -> Flask:
@@ -245,6 +377,7 @@ def create_app(db_reader: DBReader) -> Flask:
                 "timestamp":    e["timestamp"],
                 "data_preview": _data_preview(e["data"]),
                 "data_entries": len(e["data"]),
+                "data_html":    _render_data(e["protocol"], e["data"]),
                 "data_full":    json.dumps(e["data"], indent=2, ensure_ascii=False),
             })
 

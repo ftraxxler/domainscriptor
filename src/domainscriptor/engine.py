@@ -35,6 +35,7 @@ from domainscriptor.data.canonical_db import CanonicalDataModel, SettingsDataMod
 from domainscriptor.data.db_reader import DBReader
 from domainscriptor.data.db_writer import DBWriter
 from domainscriptor.smb_loot import is_interesting, extract_text, search_credentials
+from domainscriptor import term_ui as tui
 
 # IP / CIDR / Hostname – verhindert u. a. Argument-Injection über führende '-'
 _TARGET_RE = re.compile(
@@ -367,7 +368,7 @@ class Engine:
         return sorted(self.runner.job_logs.keys())
 
     def reattach_job(self, name: str):
-        """Re-attach to a background job: stream its output live again. Ctrl-Z
+        """Re-attach to a background job: stream its output live again. The detach key
         detaches once more; if the job already finished, its full log is shown."""
         detached = self.runner.follow(name)
         if detached:
@@ -384,7 +385,7 @@ class Engine:
                 fg=typer.colors.YELLOW,
             )
             return
-        typer.echo(output)
+        tui.page_output(output)
 
     def exit(self):
         self.runner.stop_all()
@@ -566,6 +567,17 @@ class Engine:
             return {"targets_file": str(targets_file)}, f"all targets ({targets_file.name})"
         return {"target": ip}, ip
 
+    def _read_target_list(self):
+        """Hosts from targets.txt as a list (blank lines and '#' comments skipped)."""
+        path = self._p("targets_file")
+        if not path.exists():
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+
     def check_smb_security(self, ip=None, proxy=False):
         relay = None
         if proxy==True:
@@ -636,18 +648,95 @@ class Engine:
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
             return None
 
-    def hunt_smb_credentials(self, target=None, shares=None, max_file_size=3_000_000):
+    def list_shares(self, target=None):
         """
-        Durchsucht SMB-Shares rekursiv nach interessanten Dateien (Konfigs, Skripte,
-        Office-Dokumente, ...), lädt Treffer nach loot/<target>/<share>/... herunter
-        und scannt deren Inhalt nach Zugangsdaten-Mustern.
+        Listet die SMB-Shares eines Hosts (smbclient -L) mit farbiger, lesbarer
+        Aufbereitung und legt das Ergebnis als eigenes 'SMB-SHARES'-Protokoll in
+        der DB ab (im Web eigener Eintrag, analog zu SMB-DIFF / SMB-LOOT).
+
+        target='all' listet die Shares für jeden Host aus targets.txt.
         """
         if not self._check_adapter_exists("smbclient"):
             typer.echo("smbclient adapter not available")
             return
 
         if not target:
-            target = typer.prompt("Enter target IP/hostname for SMB credential hunt")
+            target = typer.prompt(
+                "Enter target IP/hostname to list shares for (or 'all' for targets.txt)")
+
+        if str(target).strip().lower() == "all":
+            targets = self._read_target_list()
+            if not targets:
+                typer.echo("No targets found. Use 'targets set' first.")
+                return
+            reports = []
+            for t in targets:
+                typer.secho(f"\n=== Shares on {t} ===", fg=typer.colors.CYAN, bold=True)
+                res = self.list_shares(target=t)
+                reports.append(f"[{t}]\n{res or '(nothing)'}")
+            return "\n\n".join(reports)
+
+        auth = self.get_default_Credentials()
+        if not auth:
+            typer.echo("No credentials configured. Use 'settings add' first.")
+            return
+
+        adapter = self.create_adapter("smbclient")
+        cmd = adapter.build_command(target=target, list_shares=True, auth=auth)
+        result = self._smb_raw_run(cmd, timeout=30)
+        if not result:
+            typer.echo(f"Could not list shares on {target} (timeout or smbclient missing).")
+            return
+        shares = adapter.parse_share_entries(result.stdout)
+        if not shares:
+            combined = (result.stdout + result.stderr).upper()
+            if "NT_STATUS" in combined or "LOGON_FAILURE" in combined:
+                typer.echo(f"Access denied / logon failure listing shares on {target}.")
+            else:
+                typer.echo(f"No shares found on {target}.")
+            return
+
+        report = adapter.prettify_shares(shares)
+
+        # Persist as its own protocol/tool so the web UI shows a dedicated entry.
+        self.write_data(CanonicalDataModel(
+            "SMB-SHARES", target, "list_shares", datetime.now().isoformat(),
+            [s.to_dict() for s in shares],
+        ))
+        return report
+
+    def hunt_smb_credentials(self, target=None, shares=None, max_file_size=3_000_000,
+                             include_admin=False):
+        """
+        Durchsucht SMB-Shares rekursiv nach interessanten Dateien (Konfigs, Skripte,
+        Office-Dokumente, ...), lädt Treffer nach loot/<target>/<share>/... herunter
+        und scannt deren Inhalt nach Zugangsdaten-Mustern.
+
+        target='all' durchsucht alle Hosts aus targets.txt. ``include_admin`` (bzw.
+        eine interaktive Rückfrage) bezieht administrative Shares (C$, F$, ADMIN$,
+        ...) mit ein - nützlich, wenn ein Host nur solche Laufwerks-Shares anbietet.
+        """
+        if not self._check_adapter_exists("smbclient"):
+            typer.echo("smbclient adapter not available")
+            return
+
+        if not target:
+            target = typer.prompt(
+                "Enter target IP/hostname for SMB credential hunt (or 'all' for targets.txt)")
+
+        if str(target).strip().lower() == "all":
+            targets = self._read_target_list()
+            if not targets:
+                typer.echo("No targets found. Use 'targets set' first.")
+                return
+            summaries = []
+            for t in targets:
+                typer.secho(f"\n=== Hunting creds on {t} ===", fg=typer.colors.CYAN, bold=True)
+                res = self.hunt_smb_credentials(
+                    target=t, shares=shares, max_file_size=max_file_size,
+                    include_admin=include_admin)
+                summaries.append(f"[{t}]\n{res or '(nothing)'}")
+            return "\n\n".join(summaries)
 
         auth = self.get_default_Credentials()
         if not auth:
@@ -659,15 +748,31 @@ class Engine:
             cmd = list_adapter.build_command(target=target, list_shares=True, auth=auth)
             result = self._smb_raw_run(cmd, timeout=30)
             share_entries = list_adapter.parse_share_entries(result.stdout) if result else []
-            shares = [
-                s.name for s in share_entries
-                if s.share_type == "Disk"
-                and s.name.upper() not in {"ADMIN$", "C$", "IPC$"}
-                and not s.name.endswith("$")
-            ]
+
+            # All disk shares except the IPC$ control pipe. Administrative shares end
+            # in '$' (ADMIN$, C$, F$, ...); with admin creds they often hold the most
+            # interesting files, so we don't discard them outright anymore.
+            disk = [s.name for s in share_entries
+                    if s.share_type == "Disk" and s.name.upper() != "IPC$"]
+            non_admin = [n for n in disk if not n.endswith("$")]
+            admin = [n for n in disk if n.endswith("$")]
+
+            shares = list(non_admin)
+            if include_admin:
+                shares += admin
+            elif not non_admin and admin:
+                typer.secho(
+                    f"No non-administrative shares found, but {len(admin)} "
+                    f"administrative share(s) are visible: {', '.join(admin)}",
+                    fg=typer.colors.YELLOW,
+                )
+                if typer.confirm(
+                        "Scan administrative shares? (needs admin rights; "
+                        "C$/drive shares can be large)", default=False):
+                    shares = list(admin)
 
         if not shares:
-            typer.echo("No accessible (non-administrative) shares found.")
+            typer.echo("No accessible shares to scan.")
             return
 
         typer.echo(f"Scanning shares on {target}: {shares}")
@@ -725,12 +830,15 @@ class Engine:
             ))
 
         hits_findings = [f for f in findings if f["matches"]]
+        hit_tag = tui.color(f"{len(hits_findings)} file(s) with credential-like content",
+                            "green", "bold") if hits_findings else "0 with credential-like content"
         summary = (
             f"Scanned {scanned} file(s), downloaded {downloaded} to {loot_root}, "
-            f"{len(hits_findings)} file(s) with credential-like content."
+            f"{hit_tag}."
         )
         if hits_findings:
-            summary += "\n" + "\n".join(f"  - {f['local_path']}" for f in hits_findings)
+            summary += "\n" + "\n".join(
+                f"  {tui.status_tag(True)} {f['local_path']}" for f in hits_findings)
         typer.echo(summary)
         return summary
 
@@ -739,13 +847,28 @@ class Engine:
         Vergleicht für alle hinterlegten User (settings), welche Shares sie sehen,
         ob sie darauf zugreifen dürfen und welche Dateien sie darin sehen - um schnell
         zu erkennen, ob ein (neuer) User andere Berechtigungen/Sichtbarkeiten hat.
+
+        target='all' vergleicht den Zugriff für jeden Host aus targets.txt.
         """
         if not self._check_adapter_exists("smbclient"):
             typer.echo("smbclient adapter not available")
             return
 
         if not target:
-            target = typer.prompt("Enter target IP/hostname to compare share access for")
+            target = typer.prompt(
+                "Enter target IP/hostname to compare share access for (or 'all' for targets.txt)")
+
+        if str(target).strip().lower() == "all":
+            targets = self._read_target_list()
+            if not targets:
+                typer.echo("No targets found. Use 'targets set' first.")
+                return
+            reports = []
+            for t in targets:
+                typer.secho(f"\n=== Share diff on {t} ===", fg=typer.colors.CYAN, bold=True)
+                res = self.diff_shares(target=t)
+                reports.append(f"[{t}]\n{res or '(nothing)'}")
+            return "\n\n".join(reports)
 
         settings_list = self.db_reader.fetch_settings()
         if len(settings_list) < 2:

@@ -56,6 +56,11 @@ class AIConfig:
 class ToolsConfig:
     responder_log: str = "/usr/share/responder/logs/Responder-Session.log"
     default_timeout: int = 300
+    # Key to detach a live/attached job into the background. Ctrl-Z is avoided on
+    # purpose: zsh job control and tmux/screen (Ctrl-B / Ctrl-A) would grab it.
+    detach_key: str = "ctrl-g"
+    # Pager for long command output (mouse-wheel scrollback). Empty = no pager.
+    pager: str = "less -R"
 
 
 @dataclass
@@ -213,6 +218,8 @@ model    = ""                        # leer = Provider-Default
 [tools]
 responder_log   = "/usr/share/responder/logs/Responder-Session.log"
 default_timeout = 300
+detach_key      = "ctrl-g"          # key to detach a running job (not Ctrl-Z!)
+pager           = "less -R"         # pager for long output ("" to disable)
 """
 
 

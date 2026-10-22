@@ -10,6 +10,7 @@ from ..abstract_adapter import Adapter, AdapterError
 from typing import Optional, List
 
 from ...data.canonical_db import CanonicalDataModel, SettingsDataModel
+from ... import term_ui as tui
 
 _SMBCLIENT_LS_RE = re.compile(
     r"""
@@ -196,27 +197,33 @@ class SMBClientAdapter(Adapter):
 
     @staticmethod
     def prettify(entries: List[SmbEntry]):
-        output = ""
-        header = f"{'NAME':40} {'TYPE':6} {'SIZE':>8} {'MODIFIED':20} {'KIND'}\n"
-        output += header
-        output += "-" * len(header) + "\n"
+        header = f"{'NAME':40} {'TYPE':6} {'SIZE':>8} {'MODIFIED':20} {'KIND'}"
+        output = tui.color(header, "grey", "bold") + "\n"
+        output += tui.color("-" * len(header), "grey") + "\n"
         for e in entries:
             kind = "DIR" if e.is_dir else "FILE"
             ftype = e.extention or "-"
             mtime = datetime.fromisoformat(str(e.mtime)).strftime("%Y-%m-%d %H:%M")
 
-            output += f"{e.name:40} {ftype:6} {e.size:8} {mtime:20} {kind}\n"
+            name = tui.color(f"{e.name:40}", "blue", "bold") if e.is_dir else f"{e.name:40}"
+            kind_c = tui.color(kind, "blue") if e.is_dir else tui.color(kind, "cyan")
+            output += f"{name} {ftype:6} {e.size:8} {mtime:20} {kind_c}\n"
 
         return output
 
     @staticmethod
     def prettify_shares(shares: List[SmbShare]):
-        output = ""
-        header = f"{'SHARE':30} {'TYPE':8} {'COMMENT'}\n"
-        output += header
-        output += "-" * len(header) + "\n"
+        header = f"{'SHARE':30} {'TYPE':8} {'COMMENT'}"
+        output = tui.color(header, "grey", "bold") + "\n"
+        output += tui.color("-" * len(header), "grey") + "\n"
         for s in shares:
-            output += f"{s.name:30} {s.share_type:8} {s.comment}\n"
+            is_admin = s.name.endswith("$")
+            if s.share_type == "Disk":
+                name = tui.color(f"{s.name:30}", "yellow") if is_admin else tui.color(f"{s.name:30}", "green", "bold")
+            else:
+                name = tui.color(f"{s.name:30}", "grey")
+            stype = tui.color(f"{s.share_type:8}", "cyan")
+            output += f"{name} {stype} {tui.color(s.comment, 'grey')}\n"
         return output
 
     def normalizer(self, entries):
