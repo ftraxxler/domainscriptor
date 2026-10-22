@@ -1,5 +1,6 @@
 from domainscriptor import term_ui as tui
 from domainscriptor import web
+from domainscriptor import report
 from domainscriptor.engine import Engine
 
 
@@ -108,6 +109,48 @@ def test_expand_target_passthrough_host():
     assert eng._expand_target("dc01.corp.local") == ["dc01.corp.local"]
     assert eng._expand_target("10.0.0.9") == ["10.0.0.9"]
     assert eng._expand_target("") == []
+
+
+def test_render_shares_access_tags():
+    html = str(web._render_data("SMB-SHARES", [
+        {"name": "Pub", "share_type": "Disk", "comment": "", "access": "READ"},
+        {"name": "C$", "share_type": "Disk", "comment": "", "access": "READ,WRITE"},
+        {"name": "No", "share_type": "Disk", "comment": "", "access": "NO ACCESS"},
+    ]))
+    assert "<th>Access</th>" in html
+    assert "tag-rw" in html and "READ,WRITE" in html
+    assert "tag-deny" in html and "NO ACCESS" in html
+
+
+def test_render_shares_no_access_column_when_absent():
+    html = str(web._render_data("SMB-SHARES", [
+        {"name": "Pub", "share_type": "Disk", "comment": ""},
+    ]))
+    assert "<th>Access</th>" not in html
+
+
+def test_collect_shares_dedupes_latest_per_host_share():
+    findings = [
+        {"protocol": "SMB-SHARES", "ip_hostname": "10.0.0.5", "timestamp": "2026-10-22T09:00",
+         "data": [{"name": "Pub", "share_type": "Disk", "access": "READ", "comment": ""}]},
+        {"protocol": "SMB-SHARES", "ip_hostname": "10.0.0.5", "timestamp": "2026-10-22T11:00",
+         "data": [{"name": "Pub", "share_type": "Disk", "access": "READ,WRITE", "comment": ""}]},
+        {"protocol": "SMB", "ip_hostname": "10.0.0.5", "timestamp": "x", "data": [{"ignored": 1}]},
+    ]
+    rows = report._collect_shares(findings)
+    assert len(rows) == 1
+    assert rows[0]["access"] == "READ,WRITE"  # later timestamp wins
+    assert "_ts" not in rows[0]
+
+
+def test_report_includes_share_section():
+    findings = [{"protocol": "SMB-SHARES", "ip_hostname": "10.0.0.5",
+                 "toolname": "list_shares", "timestamp": "2026-10-22T10:00",
+                 "data": [{"name": "C$", "share_type": "Disk",
+                           "access": "READ,WRITE", "comment": "Default"}]}]
+    assert "SMB Shares" in report.build_markdown(findings)
+    html = report.build_html(findings)
+    assert "Zugriffsrechte" in html and "acc-rw" in html
 
 
 def test_prune_empty_dirs(tmp_path):

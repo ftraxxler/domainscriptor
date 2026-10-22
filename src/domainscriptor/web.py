@@ -79,6 +79,7 @@ _TEMPLATE = """
     .tag { display: inline-block; padding: .05rem .4rem; border-radius: .3rem;
            font-size: .68rem; font-weight: 600; }
     .tag-ok   { background: rgba(63,185,80,.18);  color: #3fb950; }
+    .tag-rw   { background: rgba(210,168,255,.20); color: #d2a8ff; }
     .tag-deny { background: rgba(248,81,73,.18);   color: #f85149; }
     .tag-adm  { background: rgba(210,153,34,.18);  color: #d29922; }
     .tag-hit  { background: rgba(248,81,73,.22);   color: #ff7b72; }
@@ -242,17 +243,36 @@ def _esc(v) -> str:
     return str(escape("" if v is None else str(v)))
 
 
+_ACCESS_TAG = {
+    "READ,WRITE": "tag-rw",
+    "READ": "tag-ok",
+    "NO ACCESS": "tag-deny",
+}
+
+
+def _access_cell(access) -> str:
+    access = ("" if access is None else str(access)).strip()
+    if not access or access in ("-", "ERROR"):
+        return "<span class='tag tag-dim'>—</span>" if access != "ERROR" else \
+               "<span class='tag tag-dim'>error</span>"
+    cls = _ACCESS_TAG.get(access, "tag-dim")
+    return f"<span class='tag {cls}'>{_esc(access)}</span>"
+
+
 def _render_shares(data: list) -> str:
+    has_access = any("access" in s for s in data)
     rows = []
     for s in data:
         admin = str(s.get("name", "")).endswith("$")
         tag = " <span class='tag tag-adm'>admin</span>" if admin else ""
+        acc = f"<td>{_access_cell(s.get('access'))}</td>" if has_access else ""
         rows.append(
             f"<tr><td class='mono'>{_esc(s.get('name'))}{tag}</td>"
-            f"<td>{_esc(s.get('share_type'))}</td>"
+            f"<td>{_esc(s.get('share_type'))}</td>{acc}"
             f"<td>{_esc(s.get('comment'))}</td></tr>")
+    acc_h = "<th>Access</th>" if has_access else ""
     return ("<table class='dtable'><thead><tr><th>Share</th><th>Type</th>"
-            f"<th>Comment</th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
+            f"{acc_h}<th>Comment</th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
 
 
 def _render_loot(data: list) -> str:

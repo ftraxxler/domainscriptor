@@ -42,6 +42,36 @@ def _stats(findings: List[dict]) -> dict:
 _SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
+def _collect_shares(findings: List[dict]) -> List[dict]:
+    """Flatten all SMB-SHARES entries into host/share/access rows for an overview.
+
+    Only the latest entry per (host, share) is kept so re-scans don't duplicate.
+    """
+    latest: Dict[tuple, dict] = {}
+    for f in findings:
+        if str(f.get("protocol", "")).upper() != "SMB-SHARES":
+            continue
+        host = f.get("ip_hostname") or "(unknown)"
+        ts = f.get("timestamp") or ""
+        for s in f.get("data") or []:
+            if not isinstance(s, dict):
+                continue
+            key = (host, s.get("name"))
+            if key not in latest or ts >= latest[key]["_ts"]:
+                latest[key] = {
+                    "host": host,
+                    "name": s.get("name", ""),
+                    "share_type": s.get("share_type", ""),
+                    "access": s.get("access", ""),
+                    "comment": s.get("comment", ""),
+                    "_ts": ts,
+                }
+    rows = sorted(latest.values(), key=lambda r: (r["host"], r["name"]))
+    for r in rows:
+        r.pop("_ts", None)
+    return rows
+
+
 def _sorted_structured_findings(structured: Optional[dict]) -> List[dict]:
     items = (structured or {}).get("findings") or []
     return sorted(items, key=lambda f: _SEV_RANK.get(str(f.get("severity", "")).lower(), 0),
@@ -116,6 +146,20 @@ def build_markdown(findings: List[dict], ai_analysis: Optional[str] = None,
             )
         lines.append("")
 
+    shares = _collect_shares(findings)
+    if shares:
+        lines.append("## SMB Shares & Zugriffsrechte")
+        lines.append("")
+        lines.append("| Host | Share | Typ | Zugriff | Kommentar |")
+        lines.append("|------|-------|-----|---------|-----------|")
+        for s in shares:
+            comment = str(s.get("comment", "")).replace("|", "\\|")
+            lines.append(
+                f"| {s['host']} | {s['name']} | {s['share_type']} "
+                f"| {s.get('access') or '-'} | {comment} |"
+            )
+        lines.append("")
+
     if ai_analysis:
         lines.append("## KI-Analyse")
         lines.append("")
@@ -177,6 +221,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .sev {{ font-weight:600; font-size:.72rem; }}
   .sev-critical {{ color:#ff7b72; }} .sev-high {{ color:#ffa657; }}
   .sev-medium {{ color:#e3b341; }} .sev-low {{ color:#58a6ff; }} .sev-info {{ color:#8b949e; }}
+  .acc {{ font-weight:600; font-size:.72rem; }}
+  .acc-rw {{ color:#d2a8ff; }} .acc-read {{ color:#3fb950; }}
+  .acc-no {{ color:#f85149; }} .acc-dim {{ color:#8b949e; }}
 </style></head><body>
 <h1>⌬ Domainscriptor Report</h1>
 <p class="meta">Generiert: {generated}</p>
@@ -227,6 +274,23 @@ def build_html(findings: List[dict], ai_analysis: Optional[str] = None,
         struct_section += (
             "<h2>Credentials</h2><table class='tbl'><thead><tr>"
             "<th>Domain</th><th>User</th><th>Typ</th><th>Secret</th><th>Quelle</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+
+    shares = _collect_shares(findings)
+    if shares:
+        acc_cls = {"READ,WRITE": "acc-rw", "READ": "acc-read", "NO ACCESS": "acc-no"}
+        rows = "".join(
+            f"<tr><td>{esc(str(s['host']))}</td><td class='v'>{esc(str(s['name']))}</td>"
+            f"<td>{esc(str(s['share_type']))}</td>"
+            f"<td><span class='acc {acc_cls.get(str(s.get('access','')), 'acc-dim')}'>"
+            f"{esc(str(s.get('access') or '-'))}</span></td>"
+            f"<td>{esc(str(s.get('comment','')))}</td></tr>"
+            for s in shares
+        )
+        struct_section += (
+            "<h2>SMB Shares &amp; Zugriffsrechte</h2><table class='tbl'><thead><tr>"
+            "<th>Host</th><th>Share</th><th>Typ</th><th>Zugriff</th><th>Kommentar</th>"
             f"</tr></thead><tbody>{rows}</tbody></table>"
         )
 

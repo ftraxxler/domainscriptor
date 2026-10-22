@@ -1,9 +1,12 @@
 from datetime import datetime
 import ipaddress
 import re
+import socket
 import subprocess
 import sys
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from queue import Queue
 from pathlib import Path
@@ -689,15 +692,16 @@ class Engine:
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
             return None
 
-    def list_shares(self, target=None):
+    def list_shares(self, target=None, check_write=None):
         """
-        Listet die SMB-Shares eines Hosts (smbclient -L) mit farbiger, lesbarer
-        Aufbereitung und legt das Ergebnis als eigenes 'SMB-SHARES'-Protokoll in
-        der DB ab (im Web eigener Eintrag, analog zu SMB-DIFF / SMB-LOOT).
+        Listet SMB-Shares und zeigt, welche Rechte der verwendete (Default-)User
+        auf jedem Share hat (READ / READ,WRITE / NO ACCESS). Das Ergebnis wird als
+        eigenes 'SMB-SHARES'-Protokoll gespeichert (eigener Eintrag in Web + Report).
 
-        target kann ein einzelner Host, ein CIDR-Subnetz (10.0.0.0/24), eine
-        Range (10.0.0.1-50) oder 'all' (targets.txt) sein. Subnetze/Ranges werden
-        in Einzelhosts aufgelöst und nacheinander abgefragt.
+        target kann ein einzelner Host, ein CIDR-Subnetz (10.0.0.0/24), eine Range
+        (10.0.0.1-50) oder 'all' (targets.txt) sein. Subnetze/Ranges werden in
+        Einzelhosts aufgelöst; bei vielen Hosts läuft der Scan parallel mit einem
+        schnellen 445-Vorabtest, damit tote Hosts den Lauf nicht blockieren.
         """
         if not self._check_adapter_exists("smbclient"):
             typer.echo("smbclient adapter not available")
@@ -726,30 +730,87 @@ class Engine:
             return
 
         multi = len(hosts) > 1
-        if len(hosts) > 64 and not typer.confirm(
-                f"This expands to {len(hosts)} hosts (smbclient -L each). Continue?",
-                default=False):
+        if len(hosts) > 256 and not typer.confirm(
+                f"This expands to {len(hosts)} hosts. Continue?", default=False):
             return
 
-        # Per-host timeout: a full subnet would stall on unreachable hosts at 30s
-        # each, so shorten it when scanning many.
-        timeout = 8 if multi else 30
-        reports = []
-        for host in hosts:
-            report = self._list_shares_one(host, auth, timeout=timeout, quiet=multi)
-            if report:
-                typer.secho(f"\n=== Shares on {host} ===", fg=typer.colors.CYAN, bold=True)
-                typer.echo(report)
-                reports.append(f"[{host}]\n{report}")
+        # Write-access testing is intrusive (creates + deletes a temp file), so
+        # only offer it for a single host and never auto-enable it for subnets.
+        if check_write is None:
+            check_write = (not multi and sys.stdin.isatty() and typer.confirm(
+                "Also test WRITE access? (creates + deletes a temp file per readable share)",
+                default=False))
 
-        if multi and not reports:
-            typer.echo(f"No SMB shares found on any of the {len(hosts)} host(s).")
-        return "\n\n".join(reports) if reports else None
+        if multi:
+            return self._list_shares_sweep(hosts, auth, check_write)
 
-    def _list_shares_one(self, target, auth, timeout=30, quiet=False):
-        """List one host's shares, persist them, and return the colored table
-        (or None). With ``quiet`` (subnet sweeps) unreachable/empty hosts stay
-        silent instead of printing a line each."""
+        report = self._list_shares_one(hosts[0], auth, timeout=30,
+                                       quiet=False, check_write=check_write)
+        return report
+
+    def _list_shares_sweep(self, hosts, auth, check_write):
+        """Scan many hosts: fast concurrent 445 pre-check, then concurrent share
+        listing. Prints progress so a /24 never looks 'stuck', and returns the
+        combined report (printed once by the caller/pager)."""
+        typer.secho(f"Probing {len(hosts)} host(s) for SMB (tcp/445) ...",
+                    fg=typer.colors.CYAN)
+        reachable = []
+        with ThreadPoolExecutor(max_workers=min(100, len(hosts))) as ex:
+            futs = {ex.submit(self._port_open, h): h for h in hosts}
+            for fut in as_completed(futs):
+                if fut.result():
+                    reachable.append(futs[fut])
+        typer.secho(f"  {len(reachable)}/{len(hosts)} host(s) have 445 open.",
+                    fg=typer.colors.GREEN if reachable else typer.colors.YELLOW)
+        if not reachable:
+            return None
+
+        reachable.sort(key=self._host_sort_key)
+        results = {}
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(16, len(reachable))) as ex:
+            futs = {ex.submit(self._list_shares_one, h, auth, 20, True, check_write): h
+                    for h in reachable}
+            for fut in as_completed(futs):
+                done += 1
+                host = futs[fut]
+                try:
+                    rep = fut.result()
+                except Exception:
+                    rep = None
+                if rep:
+                    results[host] = rep
+                typer.echo(
+                    f"\r  listing shares: {done}/{len(reachable)} done, "
+                    f"{len(results)} with shares ", nl=False)
+        typer.echo("")  # end the progress line
+
+        if not results:
+            typer.echo("No accessible SMB shares found on any reachable host.")
+            return None
+        ordered = [f"=== Shares on {h} ===\n{results[h]}"
+                   for h in reachable if h in results]
+        return "\n\n".join(ordered)
+
+    @staticmethod
+    def _host_sort_key(host):
+        try:
+            return (0, int(ipaddress.ip_address(host)))
+        except ValueError:
+            return (1, host)
+
+    @staticmethod
+    def _port_open(host, port=445, timeout=1.5):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (OSError, ValueError, OverflowError):
+            return False
+
+    def _list_shares_one(self, target, auth, timeout=30, quiet=False, check_write=False):
+        """List one host's shares + the current user's access per share, persist
+        them, and return the colored table (or None). With ``quiet`` (subnet
+        sweeps) unreachable/empty hosts stay silent."""
         adapter = self.create_adapter("smbclient")
         cmd = adapter.build_command(target=target, list_shares=True, auth=auth)
         result = self._smb_raw_run(cmd, timeout=timeout)
@@ -767,12 +828,88 @@ class Engine:
                     typer.echo(f"No shares found on {target}.")
             return None
 
+        rows = []
+        for s in shares:
+            access = "-"
+            if s.share_type == "Disk":
+                access = self._probe_share_access(target, s.name, auth, check_write)
+            row = s.to_dict()
+            row["access"] = access
+            rows.append(row)
+
         # Persist as its own protocol/tool so the web UI shows a dedicated entry.
         self.write_data(CanonicalDataModel(
-            "SMB-SHARES", target, "list_shares", datetime.now().isoformat(),
-            [s.to_dict() for s in shares],
+            "SMB-SHARES", target, "list_shares", datetime.now().isoformat(), rows,
         ))
-        return adapter.prettify_shares(shares)
+        return self._format_shares_table(rows)
+
+    def _probe_share_access(self, target, share, auth, check_write=False):
+        """Determine the default user's access to one share: 'READ,WRITE',
+        'READ', 'NO ACCESS' or 'ERROR'. WRITE is only probed when ``check_write``
+        is set (it creates and immediately deletes a temporary file)."""
+        adapter = self.create_adapter("smbclient")
+        ls = self._smb_raw_run(
+            adapter.build_command(target=target, share=share, command="ls", auth=auth),
+            timeout=15)
+        if not ls:
+            return "ERROR"
+        combined = (ls.stdout + ls.stderr).upper()
+        if ls.returncode != 0 or "NT_STATUS_ACCESS_DENIED" in combined or "NT_STATUS_LOGON_FAILURE" in combined:
+            return "NO ACCESS"
+        if "NT_STATUS" in combined and "NT_STATUS_NO_SUCH_FILE" not in combined:
+            return "NO ACCESS"
+        if not check_write:
+            return "READ"
+
+        # Write probe: upload a tiny uniquely-named file, then remove it again.
+        remote = f"._ds_wtest_{uuid.uuid4().hex[:8]}.tmp"
+        local = self._p("loot_dir") / remote
+        try:
+            local.parent.mkdir(parents=True, exist_ok=True)
+            local.write_text("ds")
+        except OSError:
+            return "READ"
+        try:
+            put = self._smb_raw_run(
+                adapter.build_command(
+                    target=target, share=share,
+                    command=f'put "{local}" "{remote}"', auth=auth),
+                timeout=15)
+            put_out = ((put.stdout + put.stderr).upper()) if put else "NT_STATUS_ACCESS_DENIED"
+            can_write = bool(put) and put.returncode == 0 and "NT_STATUS" not in put_out
+            if can_write:
+                self._smb_raw_run(
+                    adapter.build_command(
+                        target=target, share=share,
+                        command=f'rm "{remote}"', auth=auth),
+                    timeout=15)
+            return "READ,WRITE" if can_write else "READ"
+        finally:
+            try:
+                local.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _format_shares_table(rows):
+        """Colored table of shares + the current user's access rights."""
+        header = f"{'SHARE':28} {'TYPE':8} {'ACCESS':12} {'COMMENT'}"
+        out = tui.color(header, "grey", "bold") + "\n"
+        out += tui.color("-" * len(header), "grey") + "\n"
+        for r in rows:
+            name = str(r.get("name", ""))
+            is_admin = name.endswith("$")
+            if r.get("share_type") == "Disk":
+                name_c = tui.color(f"{name:28}", "yellow") if is_admin else tui.color(f"{name:28}", "green", "bold")
+            else:
+                name_c = tui.color(f"{name:28}", "grey")
+            access = str(r.get("access", "-"))
+            style = {"READ,WRITE": ("magenta", "bold"), "READ": ("green",),
+                     "NO ACCESS": ("red",), "ERROR": ("grey",)}.get(access, ("grey",))
+            acc_c = tui.color(f"{access:12}", *style)
+            stype = tui.color(f"{str(r.get('share_type','')):8}", "cyan")
+            out += f"{name_c} {stype} {acc_c} {tui.color(str(r.get('comment','')), 'grey')}\n"
+        return out
 
     def _discover_disk_shares(self, target, auth):
         """Return (non_admin, admin) disk share names for ``target`` (IPC$ excluded)."""
